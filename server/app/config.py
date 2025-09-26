@@ -3,7 +3,7 @@ Server configuration settings.
 """
 import os
 from typing import List
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     
     # Performance
     max_events_per_request: int = 1000
-    connection_pool_size: int = 10
     
     class Config:
         env_file = ".env"

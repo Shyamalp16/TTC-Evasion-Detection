@@ -25,8 +25,8 @@ class Event(Base):
     evasion_confidence = Column(Float, nullable=True)
     num_detections = Column(Integer, default=0)
     
-    # Metadata
-    metadata = Column(JSON, nullable=True)
+    # Event metadata
+    event_metadata = Column(JSON, nullable=True)
     snapshot_path = Column(String, nullable=True)
     
     # System fields
@@ -58,7 +58,7 @@ class EventBase(BaseModel):
     camera_id: Optional[int] = None
     evasion_confidence: Optional[float] = None
     num_detections: Optional[int] = None
-    metadata: Optional[Dict[str, Any]] = None
+    event_metadata: Optional[Dict[str, Any]] = None
 
 
 class EventCreate(EventBase):

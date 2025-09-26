@@ -32,7 +32,7 @@ class EventService:
                 camera_id=event_data.camera_id,
                 evasion_confidence=event_data.evasion_confidence,
                 num_detections=event_data.num_detections,
-                metadata=event_data.metadata
+                event_metadata=event_data.event_metadata
             )
             
             self.db.add(event)
