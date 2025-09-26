@@ -9,6 +9,224 @@ from loguru import logger
 from config import settings
 
 
+class TrackedPerson:
+    """Represents a tracked person with ID and crossing state."""
+
+    def __init__(self, person_id: int, bbox: List[int], frame_height: int, frame_width: int):
+        self.person_id = person_id
+        self.bbox = bbox
+        self.last_seen_frame = 0
+        self.crossed_gate = False
+        self.crossing_direction = None  # "up" or "down"
+        self.exited_frame = False  # Track if person has left the frame
+        self.frames_at_edge = 0  # Track how long person has been at frame edge
+        # Track position relative to gate line
+        _, y1, _, y2 = bbox
+        center_y = (y1 + y2) / 2
+        self.relative_position = center_y / frame_height  # 0-1 normalized
+
+    def update_position(self, bbox: List[int], frame_height: int, frame_width: int):
+        """Update person's position and check for gate crossing."""
+        self.bbox = bbox
+        x1, y1, x2, y2 = bbox
+        center_y = (y1 + y2) / 2
+        old_relative = self.relative_position
+        self.relative_position = center_y / frame_height
+
+        # Check if person has left the frame boundaries
+        margin = settings.person_exit_margin
+        if (x2 < -margin or x1 > frame_width + margin or
+            y2 < -margin or y1 > frame_height + margin):
+            logger.debug(f"Person {self.person_id} exited frame completely (bbox: {bbox})")
+            self.exited_frame = True
+            return False  # Don't process gate crossing for exited persons
+
+        # Check if person's bounding box is mostly outside the frame
+        bbox_width = x2 - x1
+        bbox_height = y2 - y1
+        if bbox_width > 0 and bbox_height > 0:
+            visible_width = min(x2, frame_width) - max(x1, 0)
+            visible_height = min(y2, frame_height) - max(y1, 0)
+            visibility_ratio = (visible_width * visible_height) / (bbox_width * bbox_height)
+
+            if visibility_ratio < 0.3:  # Less than 30% of bbox is visible
+                logger.debug(f"Person {self.person_id} mostly outside frame (visibility: {visibility_ratio:.2f})")
+                self.exited_frame = True
+                return False
+
+        # Check if bounding box is very small (person far away)
+        if bbox_width > 0 and bbox_height > 0 and (bbox_width < 20 or bbox_height < 20):
+            logger.debug(f"Person {self.person_id} bbox too small ({bbox_width}x{bbox_height})")
+            self.exited_frame = True
+            return False
+
+        # Also check if person is very close to frame edges (might be partially exiting)
+        edge_margin = settings.person_exit_edge_margin
+        if (x2 < edge_margin or x1 > frame_width - edge_margin or
+            y2 < edge_margin or y1 > frame_height - edge_margin):
+            # If they've been at the edge for multiple frames, consider them exited
+            if not hasattr(self, 'frames_at_edge'):
+                self.frames_at_edge = 0
+            self.frames_at_edge += 1
+            if self.frames_at_edge > settings.person_exit_edge_frames:
+                logger.debug(f"Person {self.person_id} exited after {self.frames_at_edge} frames at edge (bbox: {bbox})")
+                self.exited_frame = True
+                return False
+        else:
+            # Reset counter if not at edge
+            if hasattr(self, 'frames_at_edge'):
+                self.frames_at_edge = 0
+
+        # Check for crossing
+        gate_line = settings.gate_crossing_line_y
+        hysteresis = settings.gate_crossing_hysteresis / frame_height
+
+        if settings.gate_crossing_direction == "down":
+            # Person moving from top to bottom (entering)
+            if old_relative < gate_line - hysteresis and self.relative_position > gate_line + hysteresis:
+                if not self.crossed_gate:
+                    self.crossed_gate = True
+                    self.crossing_direction = "down"
+                    return True
+        elif settings.gate_crossing_direction == "up":
+            # Person moving from bottom to top (exiting)
+            if old_relative > gate_line + hysteresis and self.relative_position < gate_line - hysteresis:
+                if not self.crossed_gate:
+                    self.crossed_gate = True
+                    self.crossing_direction = "up"
+                    return True
+
+        return False
+
+
+
+class PersonTracker:
+    """Simple person tracker using bounding box overlap."""
+
+    def __init__(self):
+        self.tracked_persons: Dict[int, TrackedPerson] = {}
+        self.next_person_id = 1
+        self.frame_count = 0
+
+    def update(self, detections: List[Dict[str, Any]], frame_height: int, frame_width: int) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """
+        Update tracking with new detections.
+        Returns: (enriched_detections, crossed_person_ids)
+        """
+        self.frame_count += 1
+        crossed_person_ids = []
+
+        # Do not touch last_seen_frame here. We only update it when a
+        # detection is actually matched to a tracked person. This allows
+        # tracks to age-out correctly when not seen.
+
+        # Match detections to existing tracks (excluding exited persons)
+        matched_track_ids = set()
+        enriched_detections = []
+
+        for detection in detections:
+            bbox = detection["bbox"]
+            best_match_id = None
+            best_iou = 0
+
+            # Find best matching existing track
+            for person_id, person in self.tracked_persons.items():
+                if person_id in matched_track_ids:
+                    continue
+
+                # Skip persons who have exited the frame - they should never be matched again
+                if person.exited_frame:
+                    continue
+
+                iou = self._calculate_iou(bbox, person.bbox)
+                frames_since_seen = self.frame_count - person.last_seen_frame
+
+                # Use lower threshold for recently seen tracks (coasting)
+                threshold = settings.person_tracking_iou_threshold
+                if frames_since_seen <= 3:  # Recently seen
+                    threshold = max(0.05, threshold * 0.5)  # Much more permissive
+
+                if iou > threshold and iou > best_iou:
+                    best_iou = iou
+                    best_match_id = person_id
+
+            if best_match_id is not None:
+                # Update existing track
+                person = self.tracked_persons[best_match_id]
+                logger.debug(f"Matched detection at {bbox} to existing track {best_match_id}")
+                crossed = person.update_position(bbox, frame_height, frame_width)
+                # Mark as seen on this frame
+                person.last_seen_frame = self.frame_count
+                if crossed:
+                    crossed_person_ids.append(best_match_id)
+                matched_track_ids.add(best_match_id)
+            else:
+                # Create new track
+                logger.debug(f"Creating new track ID {self.next_person_id} for detection at {bbox}")
+                new_person = TrackedPerson(self.next_person_id, bbox, frame_height, frame_width)
+                self.tracked_persons[self.next_person_id] = new_person
+                matched_track_ids.add(self.next_person_id)
+                self.next_person_id += 1
+                logger.debug(f"Active tracks after creating new: {list(self.tracked_persons.keys())}")
+
+            # Enrich detection with tracking info
+            enriched_detection = dict(detection)
+            enriched_detection["person_id"] = best_match_id if best_match_id else self.next_person_id - 1
+
+            # Only include non-exited persons in the results
+            if best_match_id is not None:
+                person = self.tracked_persons[best_match_id]
+                if not person.exited_frame:
+                    enriched_detections.append(enriched_detection)
+            else:
+                # New person - include them
+                enriched_detections.append(enriched_detection)
+
+        # Clean up old tracks and exited persons
+        to_remove = []
+        for person_id, person in self.tracked_persons.items():
+            frames_since_seen = self.frame_count - person.last_seen_frame
+
+            # Remove persons who have exited the frame
+            if person.exited_frame:
+                logger.debug(f"Removing exited person {person_id} from tracking")
+                to_remove.append(person_id)
+                continue
+
+            # Remove persons who haven't been seen for too long
+            if frames_since_seen > settings.person_tracking_max_age:
+                to_remove.append(person_id)
+
+        for person_id in to_remove:
+            del self.tracked_persons[person_id]
+
+        logger.debug(f"Tracking: {len(self.tracked_persons)} active tracks, {len(to_remove)} removed")
+        return enriched_detections, crossed_person_ids
+
+    def _calculate_iou(self, bbox1: List[int], bbox2: List[int]) -> float:
+        """Calculate intersection over union of two bounding boxes."""
+        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_2, y1_2, x2_2, y2_2 = bbox2
+
+        # Intersection
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+
+        intersection_area = (x2_i - x1_i) * (y2_i - y1_i)
+
+        # Union
+        bbox1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
+        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = bbox1_area + bbox2_area - intersection_area
+
+        return intersection_area / union_area if union_area > 0 else 0.0
+
+
 class DetectionEngine:
     """YOLO-based person detection engine."""
     
@@ -17,6 +235,7 @@ class DetectionEngine:
         self.is_initialized = False
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
+        self.person_tracker = PersonTracker() if settings.enable_gate_crossing else None
         
     async def initialize(self) -> bool:
         """Initialize YOLO model."""
@@ -109,6 +328,16 @@ class DetectionEngine:
                         bbox = [int(v * scale) for v in [x1, y1, x2, y2]]
                         distance = self._estimate_distance(bbox, frame_height)
 
+                        # Filter out boxes that are implausible for a person
+                        w = max(1, bbox[2] - bbox[0])
+                        h = max(1, bbox[3] - bbox[1])
+                        aspect = w / h
+                        if aspect < 0.2 or aspect > 4.0:
+                            # Extremely tall/skinny or wide/flat - likely a false positive
+                            continue
+                        if w * h < 500:  # tiny boxes
+                            continue
+
                         detection = {
                             "bbox": bbox,
                             "confidence": float(confidence),
@@ -124,34 +353,62 @@ class DetectionEngine:
             logger.error(f"Detection failed: {e}")
             return []
     
-    async def detect_multiple_frames(self, frames: List[Tuple[int, np.ndarray]]) -> Dict[int, List[Dict[str, Any]]]:
-        """Detect persons in multiple frames from different cameras."""
+    async def detect_multiple_frames(self, frames: List[Tuple[int, np.ndarray]]) -> Tuple[Dict[int, List[Dict[str, Any]]], List[int]]:
+        """
+        Detect persons in multiple frames from different cameras.
+        Returns: (detection_results, crossed_person_ids)
+        """
         results = {}
-        
+        all_crossed_person_ids = []
+
         for camera_id, frame in frames:
             detections = await self.detect_persons(frame)
-            if detections:
+            # Always call tracker.update so it can age-out tracks even when
+            # there are no detections in this frame.
+            if self.person_tracker:
+                frame_height, frame_width = frame.shape[:2]
+                tracked_detections, crossed_person_ids = self.person_tracker.update(detections, frame_height, frame_width)
+                results[camera_id] = tracked_detections
+                all_crossed_person_ids.extend(crossed_person_ids)
+            else:
                 results[camera_id] = detections
-                
-        return results
+
+        return results, all_crossed_person_ids
     
     def draw_detections(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
         """Draw detection bounding boxes on frame."""
         annotated_frame = frame.copy()
-        
+
+        # Draw gate crossing line if enabled
+        if settings.enable_gate_crossing:
+            frame_height, frame_width = frame.shape[:2]
+            gate_y = int(settings.gate_crossing_line_y * frame_height)
+            cv2.line(annotated_frame, (0, gate_y), (frame_width, gate_y), (255, 0, 0), 2)
+            cv2.putText(annotated_frame, f"Gate Line ({settings.gate_crossing_direction})",
+                       (10, gate_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
         for detection in detections[:20]:  # avoid drawing too many
             x1, y1, x2, y2 = detection["bbox"]
             confidence = detection["confidence"]
             distance = detection.get("distance_m", -1.0)
-            
+            person_id = detection.get("person_id")
+
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            if distance >= 0:
-                label = f"Person {confidence:.2f} {distance:.1f}m"
+
+            # Build label with person ID if available
+            if person_id is not None:
+                label_parts = [f"ID:{person_id}"]
             else:
-                label = f"Person {confidence:.2f}"
-            cv2.putText(annotated_frame, label, (x1, y1 - 10), 
+                label_parts = []
+
+            label_parts.append(f"{confidence:.2f}")
+            if distance >= 0:
+                label_parts.append(f"{distance:.1f}m")
+
+            label = " ".join(label_parts)
+            cv2.putText(annotated_frame, label, (x1, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
+
         return annotated_frame
     
     async def get_model_info(self) -> Dict[str, Any]:

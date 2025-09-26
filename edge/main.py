@@ -95,7 +95,7 @@ class EdgeDevice:
 
                 # Small delay primarily for UI pacing
                 await asyncio.sleep(settings.preview_interval)
-                
+
             except Exception as e:
                 logger.error(f"Error in detection loop: {e}")
                 await asyncio.sleep(1)
@@ -110,8 +110,8 @@ class EdgeDevice:
         """Process frames for person detection."""
         try:
             # Run detection on all frames
-            detection_results = await self.detection_engine.detect_multiple_frames(frames)
-            
+            detection_results, crossed_person_ids = await self.detection_engine.detect_multiple_frames(frames)
+
             # Process each camera's detections
             frame_lookup = {camera_id: frame for camera_id, frame in frames}
 
@@ -120,30 +120,40 @@ class EdgeDevice:
                 if detections is not None:
                     self._last_detections[camera_id] = detections
 
+                # Log tracking info
                 if detections:
                     now = time.time()
                     if now - self._last_debug_log > 0.5:
                         logger.debug(
-                            f"Camera {camera_id}: {len(detections)} detections; "
+                            f"Camera {camera_id}: {len(detections)} tracked persons; "
                             + ", ".join(
-                                f"{det.get('distance_m', -1.0):.1f}m"
+                                f"ID:{det.get('person_id', '?')} {det.get('distance_m', -1.0):.1f}m"
                                 for det in detections[:3]
                                 if det.get('distance_m', -1.0) >= 0.0
                             )
                         )
                         self._last_debug_log = now
-                    
-                    # Add detection event (batched, not sent immediately)
+
+            # Create detection events only for persons who crossed the gate
+            if crossed_person_ids:
+                logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
+
+                # Create a single detection event for all crossings in this frame batch
+                crossing_detections = []
+                for camera_id, detections in detection_results.items():
+                    for detection in detections:
+                        person_id = detection.get('person_id')
+                        if person_id in crossed_person_ids:
+                            crossing_detections.append(detection)
+
+                if crossing_detections:
                     await self.event_processor.add_detection_event(
-                        camera_id=camera_id,
-                        detections=detections
+                        camera_id=0,  # Use camera 0 as primary for gate events
+                        detections=crossing_detections
                     )
             
             # Check for batched detections to send
             await self._send_batched_detections()
-            
-            # Simulate gate events for testing (replace with actual gate integration)
-            await self._simulate_gate_events()
             
         except Exception as e:
             logger.error(f"Error processing frames: {e}")
@@ -173,32 +183,6 @@ class EdgeDevice:
         except Exception as e:
             logger.error(f"Error sending batched detections: {e}")
     
-    async def _simulate_gate_events(self):
-        """Simulate gate open/close events for testing."""
-        import random
-        
-        if random.random() < 0.01:  # 1% chance per frame
-            gate_event = await self.event_processor.add_gate_event(
-                gate_id=settings.gate_id,
-                is_open=True,
-                event_type="open"
-            )
-            
-            # Check for evasion and send immediately if found
-            evasion_event = await self.event_processor._check_for_evasion(gate_event)
-            if evasion_event and settings.evasion_send_immediately:
-                asyncio.create_task(
-                    self.server_client.send_evasion_event(evasion_event)
-                )
-            
-            # Check for evasion after a short delay
-            await asyncio.sleep(0.5)
-            
-            await self.event_processor.add_gate_event(
-                gate_id=settings.gate_id,
-                is_open=False,
-                event_type="close"
-            )
     
     async def health_check(self) -> dict:
         """Perform health check on all components."""

@@ -3,3 +3,4 @@
 /server/deets.txt
 /edge/*.pt
 /edge/logs/*
+/edge/models/*

@@ -33,7 +33,15 @@ class Settings(BaseSettings):
     camera_focal_length_mm: float = 3.6  # Typical webcam focal length
     camera_sensor_height_mm: float = 2.76  # Sensor height (mm) for focal length conversion
     max_detection_distance_m: float = 25.0  # Clamp distance estimates to a reasonable range
-    
+
+    # Gate Crossing Settings
+    enable_gate_crossing: bool = True
+    gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where gate crossing line is drawn
+    gate_crossing_direction: str = "down"  # "up" or "down" - direction of crossing (person moving from top to bottom or bottom to top)
+    gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
+    person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
+    person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
+
     # Server Configuration
     server_url: str = "http://127.0.0.1:8000"  # Dev: local server
     server_api_key: str = "your-api-key-here"
@@ -45,8 +53,19 @@ class Settings(BaseSettings):
     detection_interval: float = 0.15  # seconds
     preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)
     
+    # Gate Crossing Settings
+    enable_gate_crossing: bool = True
+    gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where gate crossing line is drawn
+    gate_crossing_direction: str = "down"  # "up" or "down" - direction of crossing (person moving from top to bottom or bottom to top)
+    gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
+    person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
+    person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
+    person_exit_edge_margin: int = 15  # Pixels from frame edge to consider as potentially exiting
+    person_exit_edge_frames: int = 3  # Frames at edge before considering person exited
+    person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
+
     # Event Batching Settings
-    detection_batch_interval: float = 60.0  # seconds - batch regular detections
+    detection_batch_interval: float = 1.0  # seconds - batch regular detections
     evasion_send_immediately: bool = True  # send evasion events immediately
     
     # Logging
