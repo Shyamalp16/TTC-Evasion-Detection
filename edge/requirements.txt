@@ -2,29 +2,31 @@
 # Python 3.10+ required
 
 # Core AI and Computer Vision
-opencv-python==4.8.1.78
-ultralytics==8.0.196
-torch==2.1.0
-torchvision==0.16.0
-numpy==1.24.3
-Pillow==10.0.1
+opencv-python
+ultralytics
+torch
+torchvision
+numpy
+Pillow
 
 # Camera and Video Processing
-gstreamer-python==1.18.5
-pygobject==3.46.0
+# Note: gstreamer-python and pygobject may need system dependencies
+# Install system packages first: sudo apt-get install python3-gi python3-gi-cairo gir1.2-gstreamer-1.0
+# gstreamer-python
+# pygobject
 
 # Network and HTTP
-requests==2.31.0
-aiohttp==3.8.6
+requests
+aiohttp
 
 # Logging and Configuration
-loguru==0.7.2
-pydantic==2.4.2
-python-dotenv==1.0.0
+loguru
+pydantic
+python-dotenv
 
 # System Monitoring
-psutil==5.9.6
+psutil
 
 # Development and Testing (optional)
-pytest==7.4.2
-pytest-asyncio==0.21.1
+pytest
+pytest-asyncio
