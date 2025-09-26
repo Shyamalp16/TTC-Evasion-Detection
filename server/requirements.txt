@@ -1,0 +1,42 @@
+# Server Requirements
+# Python 3.10+ required
+
+# Web Framework
+fastapi==0.103.2
+uvicorn[standard]==0.23.2
+pydantic==2.4.2
+
+# Database
+sqlalchemy==2.0.21
+psycopg2-binary==2.9.7
+alembic==1.12.0
+
+# Authentication and Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# File Handling
+aiofiles==23.2.1
+python-magic==0.4.27
+
+# HTTP Client
+httpx==0.24.1
+requests==2.31.0
+
+# Configuration and Environment
+python-dotenv==1.0.0
+pydantic-settings==2.0.3
+
+# Logging and Monitoring
+loguru==0.7.2
+prometheus-client==0.17.1
+
+# Development and Testing
+pytest==7.4.2
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+httpx==0.24.1
+
+# Database Testing
+pytest-postgresql==5.0.0

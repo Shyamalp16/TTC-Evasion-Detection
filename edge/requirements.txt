@@ -1,0 +1,30 @@
+# Edge Device Requirements
+# Python 3.10+ required
+
+# Core AI and Computer Vision
+opencv-python==4.8.1.78
+ultralytics==8.0.196
+torch==2.1.0
+torchvision==0.16.0
+numpy==1.24.3
+Pillow==10.0.1
+
+# Camera and Video Processing
+gstreamer-python==1.18.5
+pygobject==3.46.0
+
+# Network and HTTP
+requests==2.31.0
+aiohttp==3.8.6
+
+# Logging and Configuration
+loguru==0.7.2
+pydantic==2.4.2
+python-dotenv==1.0.0
+
+# System Monitoring
+psutil==5.9.6
+
+# Development and Testing (optional)
+pytest==7.4.2
+pytest-asyncio==0.21.1
