@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     detection_confidence: float = 0.5
     detection_iou_threshold: float = 0.45
     detection_classes: List[int] = [0]  # Person class in COCO dataset
+    yolo_model_path: str = "yolov8m.pt"  # Heavier model for better long-range accuracy
+    detection_downscale_ratio: float = 1.0  # Keep full resolution so distant subjects stay visible
+    reference_person_height_m: float = 1.7  # Average adult height for depth estimation
+    camera_focal_length_mm: float = 3.6  # Typical webcam focal length
+    camera_sensor_height_mm: float = 2.76  # Sensor height (mm) for focal length conversion
+    max_detection_distance_m: float = 25.0  # Clamp distance estimates to a reasonable range
     
     # Server Configuration
     server_url: str = "http://127.0.0.1:8000"  # Dev: local server
@@ -34,7 +40,7 @@ class Settings(BaseSettings):
     server_timeout: int = 30
     
     # Processing Settings
-    frame_skip: int = 5  # Process every 10th frame (dev: smoother UI)
+    frame_skip: int = 5  # Process every 5th frame (dev: smoother UI)
     max_queue_size: int = 100
     detection_interval: float = 0.15  # seconds
     preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)

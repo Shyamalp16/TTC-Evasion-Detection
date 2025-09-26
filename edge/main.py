@@ -123,7 +123,14 @@ class EdgeDevice:
                 if detections:
                     now = time.time()
                     if now - self._last_debug_log > 0.5:
-                        logger.debug(f"Camera {camera_id}: {len(detections)} detections")
+                        logger.debug(
+                            f"Camera {camera_id}: {len(detections)} detections; "
+                            + ", ".join(
+                                f"{det.get('distance_m', -1.0):.1f}m"
+                                for det in detections[:3]
+                                if det.get('distance_m', -1.0) >= 0.0
+                            )
+                        )
                         self._last_debug_log = now
                     
                     # Add detection event (batched, not sent immediately)

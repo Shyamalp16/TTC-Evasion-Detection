@@ -39,9 +39,9 @@ class CameraHandler:
                 # Dev-friendly tuning (some backends ignore these)
                 if cap:
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    cap.set(cv2.CAP_PROP_FPS, 15)
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+                    cap.set(cv2.CAP_PROP_FPS, 60)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 
                 # Fallback to default webcam 0 if open failed and this looks like a stream/path
                 if (not cap or not cap.isOpened()) and isinstance(url, str) and not url.isdigit():
