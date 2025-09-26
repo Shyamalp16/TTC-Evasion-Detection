@@ -35,6 +35,8 @@ class EventProcessor:
         self.gate_events = []
         self.evasion_threshold = 2.0  # seconds
         self.max_detection_age = 10.0  # seconds
+        self.pending_detections = []  # batch regular detections
+        self.last_batch_sent = time.time()
         
     async def add_detection_event(self, camera_id: int, detections: List[Dict[str, Any]], 
                                 frame_data: Optional[bytes] = None) -> DetectionEvent:
@@ -47,6 +49,14 @@ class EventProcessor:
         )
         
         self.detection_events.append(event)
+        
+        # Add to pending batch for regular detections
+        self.pending_detections.append({
+            "timestamp": event.timestamp,
+            "camera_id": camera_id,
+            "detections": detections
+        })
+        
         logger.debug(f"Detection event added: camera {camera_id}, {len(detections)} detections")
         
         # Clean old events
@@ -105,6 +115,24 @@ class EventProcessor:
             return evasion_event
         
         return None
+    
+    async def get_pending_detections_batch(self) -> List[Dict[str, Any]]:
+        """Get pending detections for batching."""
+        if not self.pending_detections:
+            return []
+        
+        # Check if it's time to send a batch
+        current_time = time.time()
+        if current_time - self.last_batch_sent < settings.detection_batch_interval:
+            return []
+        
+        # Return pending detections and clear the list
+        batch = self.pending_detections.copy()
+        self.pending_detections.clear()
+        self.last_batch_sent = current_time
+        
+        logger.info(f"Prepared detection batch: {len(batch)} events")
+        return batch
     
     async def _calculate_evasion_confidence(self, detections: List[DetectionEvent]) -> float:
         """Calculate confidence score for evasion detection."""

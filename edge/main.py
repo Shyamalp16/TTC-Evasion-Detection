@@ -24,6 +24,7 @@ class EdgeDevice:
         self.server_client = ServerClient()
         self.is_running = False
         self.frame_count = 0
+        self._last_debug_log = 0.0
         
     async def initialize(self) -> bool:
         """Initialize all components."""
@@ -58,7 +59,11 @@ class EdgeDevice:
                 frames = await self.camera_handler.read_all_frames()
                 
                 if not frames:
-                    logger.warning("No frames received from cameras")
+                    # Throttle warnings to avoid UI lag
+                    now = time.time()
+                    if now - self._last_debug_log > 2.0:
+                        logger.warning("No frames received from cameras")
+                        self._last_debug_log = now
                     await asyncio.sleep(0.1)
                     continue
                 
@@ -84,22 +89,30 @@ class EdgeDevice:
             # Process each camera's detections
             for camera_id, detections in detection_results.items():
                 if detections:
-                    logger.debug(f"Camera {camera_id}: {len(detections)} detections")
+                    now = time.time()
+                    if now - self._last_debug_log > 0.5:
+                        logger.debug(f"Camera {camera_id}: {len(detections)} detections")
+                        self._last_debug_log = now
                     
-                    # Add detection event
-                    detection_event = await self.event_processor.add_detection_event(
+                    # Add detection event (batched, not sent immediately)
+                    await self.event_processor.add_detection_event(
                         camera_id=camera_id,
                         detections=detections
                     )
-                    
-                    # Send to server (async, don't wait)
-                    asyncio.create_task(
-                        self.server_client.send_detection_event({
-                            "timestamp": detection_event.timestamp,
-                            "camera_id": camera_id,
-                            "detections": detections
-                        })
-                    )
+                
+                # Dev preview window
+                try:
+                    annotated = self.detection_engine.draw_detections(frames[camera_id][1], detections)
+                    cv2.imshow(f"Camera {camera_id}", annotated)
+                except Exception:
+                    pass
+            
+            # Handle preview keypress (press 'q' to quit)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.is_running = False
+            
+            # Check for batched detections to send
+            await self._send_batched_detections()
             
             # Simulate gate events for testing (replace with actual gate integration)
             await self._simulate_gate_events()
@@ -107,9 +120,20 @@ class EdgeDevice:
         except Exception as e:
             logger.error(f"Error processing frames: {e}")
     
+    async def _send_batched_detections(self):
+        """Send batched detection events."""
+        try:
+            batch = await self.event_processor.get_pending_detections_batch()
+            if batch:
+                # Send batch as single request
+                asyncio.create_task(
+                    self.server_client.send_detection_batch(batch)
+                )
+        except Exception as e:
+            logger.error(f"Error sending batched detections: {e}")
+    
     async def _simulate_gate_events(self):
         """Simulate gate open/close events for testing."""
-        # This is a placeholder - replace with actual gate integration
         import random
         
         if random.random() < 0.01:  # 1% chance per frame
@@ -118,6 +142,13 @@ class EdgeDevice:
                 is_open=True,
                 event_type="open"
             )
+            
+            # Check for evasion and send immediately if found
+            evasion_event = await self.event_processor._check_for_evasion(gate_event)
+            if evasion_event and settings.evasion_send_immediately:
+                asyncio.create_task(
+                    self.server_client.send_evasion_event(evasion_event)
+                )
             
             # Check for evasion after a short delay
             await asyncio.sleep(0.5)
@@ -167,18 +198,29 @@ class EdgeDevice:
         # Close server client
         await self.server_client.close()
         
+        # Close preview windows if any
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
+        
         logger.info("Edge device shutdown complete")
 
 
 async def main():
     """Main application entry point."""
     # Configure logging
+    logger.remove()  # remove default console sink
+    # File sink
     logger.add(
         settings.log_file,
         rotation="1 day",
         retention="7 days",
-        level=settings.log_level
+        level=settings.file_log_level
     )
+    # Optional console sink with higher level to reduce overhead
+    if settings.enable_console_logs:
+        logger.add(lambda msg: print(msg, end=""), level=settings.console_log_level)
     
     logger.info("Starting SnitchSystem Edge Device")
     

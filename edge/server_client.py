@@ -3,8 +3,9 @@ Client for communicating with the local station server.
 """
 import asyncio
 import json
+import time
 import aiohttp
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from loguru import logger
 from config import settings
 
@@ -69,6 +70,50 @@ class ServerClient:
             logger.error(f"Error sending detection event: {e}")
             return False
     
+    async def send_detection_batch(self, batch_data: List[Dict[str, Any]]) -> bool:
+        """Send batched detection events to server."""
+        if not self.session:
+            logger.error("Server client not initialized")
+            return False
+        
+        try:
+            # Send each detection as individual event (fallback since server doesn't have batch endpoint)
+            success_count = 0
+            for event_data in batch_data:
+                try:
+                    payload = {
+                        "gate_id": settings.gate_id,
+                        "station_id": settings.station_id,
+                        "event_type": "detection",
+                        "timestamp": event_data["timestamp"],
+                        "camera_id": event_data["camera_id"],
+                        "detections": event_data["detections"],
+                        "event_metadata": {
+                            "confidence_scores": [d.get("confidence", 0) for d in event_data["detections"]],
+                            "num_detections": len(event_data["detections"])
+                        }
+                    }
+                    
+                    async with self.session.post(f"{self.base_url}/events", json=payload) as response:
+                        if response.status == 200:
+                            success_count += 1
+                        else:
+                            logger.warning(f"Failed to send individual detection: {response.status}")
+                            
+                except Exception as e:
+                    logger.warning(f"Error sending individual detection: {e}")
+            
+            if success_count > 0:
+                logger.info(f"Detection batch sent: {success_count}/{len(batch_data)} events successful")
+                return True
+            else:
+                logger.error(f"Failed to send any detections from batch of {len(batch_data)}")
+                return False
+                    
+        except Exception as e:
+            logger.error(f"Error sending detection batch: {e}")
+            return False
+
     async def send_evasion_event(self, evasion_data: Dict[str, Any], snapshot_data: Optional[bytes] = None) -> bool:
         """Send evasion event with optional snapshot to server."""
         if not self.session:
@@ -78,18 +123,37 @@ class ServerClient:
         try:
             url = f"{self.base_url}/events"
             
+            # Convert DetectionEvent objects to dictionaries for JSON serialization
+            detection_events_dict = []
+            for detection_event in evasion_data.get("detection_events", []):
+                detection_events_dict.append({
+                    "timestamp": detection_event.timestamp,
+                    "camera_id": detection_event.camera_id,
+                    "detections": detection_event.detections
+                })
+            
+            # Convert GateEvent object to dictionary
+            gate_event = evasion_data.get("gate_event")
+            gate_event_dict = {
+                "timestamp": gate_event.timestamp,
+                "gate_id": gate_event.gate_id,
+                "is_open": gate_event.is_open,
+                "event_type": gate_event.event_type
+            } if gate_event else None
+            
             payload = {
                 "gate_id": settings.gate_id,
                 "station_id": settings.station_id,
                 "event_type": "evasion",
                 "timestamp": evasion_data.get("timestamp"),
                 "evasion_confidence": evasion_data.get("evasion_confidence"),
-                "detection_events": evasion_data.get("detection_events"),
-                "gate_event": evasion_data.get("gate_event"),
+                "detection_events": detection_events_dict,
+                "gate_event": gate_event_dict,
                 "event_id": evasion_data.get("event_id"),
-                "metadata": {
-                    "num_detection_events": len(evasion_data.get("detection_events", [])),
-                    "total_detections": sum(len(de.get("detections", [])) for de in evasion_data.get("detection_events", []))
+                "event_metadata": {
+                    "num_detection_events": len(detection_events_dict),
+                    "total_detections": sum(len(de["detections"]) for de in detection_events_dict),
+                    "evasion_confidence": evasion_data.get("evasion_confidence")
                 }
             }
             

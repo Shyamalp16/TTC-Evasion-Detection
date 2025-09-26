@@ -14,9 +14,12 @@ class Settings(BaseSettings):
     station_id: str = "station_001"
     
     # Camera Configuration
+    #rtsp:// URLs.
     camera_urls: List[str] = [
-        "rtsp://admin:password@192.168.1.100:554/stream1",
-        "rtsp://admin:password@192.168.1.101:554/stream1"
+        "0",  # Laptop webcam index 0
+        # "1",  # Uncomment if you have a second webcam
+        # "rtsp://admin:password@192.168.1.100:554/stream1",
+        # "rtsp://admin:password@192.168.1.101:554/stream1"
     ]
     camera_timeout: int = 10
     
@@ -26,18 +29,25 @@ class Settings(BaseSettings):
     detection_classes: List[int] = [0]  # Person class in COCO dataset
     
     # Server Configuration
-    server_url: str = "http://192.168.1.50:8000"
+    server_url: str = "http://127.0.0.1:8000"  # Dev: local server
     server_api_key: str = "your-api-key-here"
     server_timeout: int = 30
     
     # Processing Settings
-    frame_skip: int = 5  # Process every 5th frame
+    frame_skip: int = 10  # Process every 10th frame (dev: smoother UI)
     max_queue_size: int = 100
-    detection_interval: float = 0.1  # seconds
+    detection_interval: float = 0.15  # seconds
+    
+    # Event Batching Settings
+    detection_batch_interval: float = 15.0  # seconds - batch regular detections
+    evasion_send_immediately: bool = True  # send evasion events immediately
     
     # Logging
     log_level: str = "INFO"
     log_file: str = "logs/edge_device.log"
+    enable_console_logs: bool = False  # reduce terminal overhead
+    console_log_level: str = "WARNING"
+    file_log_level: str = "INFO"
     
     # Privacy Settings
     snapshot_retention_days: int = 30

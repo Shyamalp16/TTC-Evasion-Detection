@@ -1,2 +1,5 @@
 *.env
 *.pyc
+/server/deets.txt
+/edge/*.pt
+/edge/logs/*

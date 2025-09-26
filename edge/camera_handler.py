@@ -1,9 +1,10 @@
 """
 Camera handling module for RTSP streams.
 """
+import os
 import cv2
 import asyncio
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from loguru import logger
 from config import settings
 
@@ -19,17 +20,46 @@ class CameraHandler:
     async def initialize_cameras(self) -> bool:
         """Initialize camera connections."""
         try:
+            logger.info(f"Initializing cameras with sources: {self.camera_urls}")
             for i, url in enumerate(self.camera_urls):
-                cap = cv2.VideoCapture(url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
-                cap.set(cv2.CAP_PROP_FPS, 30)
+                cap = None
+                tried = []
+                if isinstance(url, str) and url.isdigit():
+                    device_index = int(url)
+                    if os.name == "nt":
+                        cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW); tried.append("CAP_DSHOW")
+                        if not cap or not cap.isOpened():
+                            cap.release() if cap else None
+                            cap = cv2.VideoCapture(device_index, cv2.CAP_MSMF); tried.append("CAP_MSMF")
+                    else:
+                        cap = cv2.VideoCapture(device_index); tried.append("DEFAULT")
+                else:
+                    cap = cv2.VideoCapture(url); tried.append("SOURCE")
                 
-                if not cap.isOpened():
-                    logger.error(f"Failed to open camera {i}: {url}")
+                # Dev-friendly tuning (some backends ignore these)
+                if cap:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    cap.set(cv2.CAP_PROP_FPS, 15)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+                
+                # Fallback to default webcam 0 if open failed and this looks like a stream/path
+                if (not cap or not cap.isOpened()) and isinstance(url, str) and not url.isdigit():
+                    logger.warning(f"Primary source failed for camera {i}: {url}. Fallback to webcam 0.")
+                    if os.name == "nt":
+                        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW); tried.append("FALLBACK_DSHOW_0")
+                        if not cap or not cap.isOpened():
+                            cap.release() if cap else None
+                            cap = cv2.VideoCapture(0, cv2.CAP_MSMF); tried.append("FALLBACK_MSMF_0")
+                    else:
+                        cap = cv2.VideoCapture(0); tried.append("FALLBACK_DEFAULT_0")
+                
+                if not cap or not cap.isOpened():
+                    logger.error(f"Failed to open camera {i} using attempts: {tried}. Source: {url}")
                     return False
                     
                 self.cameras.append(cap)
-                logger.info(f"Camera {i} initialized: {url}")
+                logger.info(f"Camera {i} initialized (attempts: {tried}): {url}")
                 
             return True
             
@@ -45,7 +75,7 @@ class CameraHandler:
         cap = self.cameras[camera_index]
         ret, frame = cap.read()
         
-        if not ret:
+        if not ret or frame is None:
             logger.warning(f"Failed to read frame from camera {camera_index}")
             return None
             
@@ -71,7 +101,10 @@ class CameraHandler:
     def release_cameras(self):
         """Release all camera resources."""
         for i, cap in enumerate(self.cameras):
-            cap.release()
+            try:
+                cap.release()
+            except Exception:
+                pass
             logger.info(f"Camera {i} released")
         self.cameras.clear()
     
