@@ -4,7 +4,7 @@ Main application entry point for the edge device.
 import asyncio
 import cv2
 import time
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from config import settings
 
@@ -25,6 +25,10 @@ class EdgeDevice:
         self.is_running = False
         self.frame_count = 0
         self._last_debug_log = 0.0
+        self._last_detections: Dict[int, List[Dict[str, Any]]] = {}
+        self._detection_task: Optional[asyncio.Task] = None
+        self._frame_skip = max(1, settings.frame_skip)
+        self._last_detection_trigger = 0.0
         
     async def initialize(self) -> bool:
         """Initialize all components."""
@@ -67,18 +71,40 @@ class EdgeDevice:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # Process frames for detection
-                if self.frame_count % settings.frame_skip == 0:
-                    await self._process_frames(frames)
-                
+                # Update preview as soon as we have frames
+                self._update_preview(frames)
+
+                # Schedule detection work based on frame skip and detection interval
+                now = time.time()
+                should_run_detection = (
+                    self.frame_count % self._frame_skip == 0
+                    and (now - self._last_detection_trigger) >= settings.detection_interval
+                )
+
+                if should_run_detection:
+                    self._last_detection_trigger = now
+                    if not self._detection_task or self._detection_task.done():
+                        self._detection_task = asyncio.create_task(self._process_frames(list(frames)))
+
                 self.frame_count += 1
-                
-                # Small delay to prevent excessive CPU usage
-                await asyncio.sleep(settings.detection_interval)
+
+                # Handle preview keypress (press 'q' to quit)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.is_running = False
+                    break
+
+                # Small delay primarily for UI pacing
+                await asyncio.sleep(settings.preview_interval)
                 
             except Exception as e:
                 logger.error(f"Error in detection loop: {e}")
                 await asyncio.sleep(1)
+
+        if self._detection_task and not self._detection_task.done():
+            try:
+                await self._detection_task
+            except Exception as e:
+                logger.error(f"Pending detection task failed during shutdown: {e}")
     
     async def _process_frames(self, frames: List[Tuple[int, any]]):
         """Process frames for person detection."""
@@ -87,7 +113,13 @@ class EdgeDevice:
             detection_results = await self.detection_engine.detect_multiple_frames(frames)
             
             # Process each camera's detections
-            for camera_id, detections in detection_results.items():
+            frame_lookup = {camera_id: frame for camera_id, frame in frames}
+
+            for camera_id, frame in frame_lookup.items():
+                detections = detection_results.get(camera_id)
+                if detections is not None:
+                    self._last_detections[camera_id] = detections
+
                 if detections:
                     now = time.time()
                     if now - self._last_debug_log > 0.5:
@@ -99,17 +131,6 @@ class EdgeDevice:
                         camera_id=camera_id,
                         detections=detections
                     )
-                
-                # Dev preview window
-                try:
-                    annotated = self.detection_engine.draw_detections(frames[camera_id][1], detections)
-                    cv2.imshow(f"Camera {camera_id}", annotated)
-                except Exception:
-                    pass
-            
-            # Handle preview keypress (press 'q' to quit)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                self.is_running = False
             
             # Check for batched detections to send
             await self._send_batched_detections()
@@ -119,6 +140,19 @@ class EdgeDevice:
             
         except Exception as e:
             logger.error(f"Error processing frames: {e}")
+
+    def _update_preview(self, frames: List[Tuple[int, any]]):
+        """Render preview windows without blocking detection loop."""
+        for camera_id, frame in frames:
+            detections = self._last_detections.get(camera_id) or []
+            try:
+                if detections:
+                    annotated = self.detection_engine.draw_detections(frame, detections)
+                    cv2.imshow(f"Camera {camera_id}", annotated)
+                else:
+                    cv2.imshow(f"Camera {camera_id}", frame)
+            except Exception:
+                pass
     
     async def _send_batched_detections(self):
         """Send batched detection events."""

@@ -34,12 +34,13 @@ class Settings(BaseSettings):
     server_timeout: int = 30
     
     # Processing Settings
-    frame_skip: int = 10  # Process every 10th frame (dev: smoother UI)
+    frame_skip: int = 5  # Process every 10th frame (dev: smoother UI)
     max_queue_size: int = 100
     detection_interval: float = 0.15  # seconds
+    preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)
     
     # Event Batching Settings
-    detection_batch_interval: float = 15.0  # seconds - batch regular detections
+    detection_batch_interval: float = 60.0  # seconds - batch regular detections
     evasion_send_immediately: bool = True  # send evasion events immediately
     
     # Logging
