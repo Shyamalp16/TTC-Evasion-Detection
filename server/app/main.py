@@ -2,6 +2,7 @@
 FastAPI application main module.
 """
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List, Optional
@@ -12,6 +13,11 @@ from app.database import get_db
 from app.models import Event, EventCreate, EventResponse
 from app.services import EventService
 from app.config import settings
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore
 
 # Create FastAPI application
 app = FastAPI(
@@ -40,6 +46,19 @@ async def health_check():
     }
 
 
+def _add_local_timestamp(event: Event) -> EventResponse:
+    tz = ZoneInfo(settings.time_zone)
+    # If timestamp is naive, assume server local time
+    ts = event.timestamp
+    if ts.tzinfo is None:
+        ts_local = ts.astimezone(tz)
+    else:
+        ts_local = ts.astimezone(tz)
+    resp = EventResponse.from_orm(event)
+    resp.timestamp_local = ts_local.isoformat()
+    return resp
+
+
 @app.post("/events", response_model=EventResponse)
 async def create_event(
     event_data: EventCreate,
@@ -52,7 +71,7 @@ async def create_event(
         
         logger.info(f"Event created: {event.id} - {event.event_type}")
         
-        return EventResponse.from_orm(event)
+        return _add_local_timestamp(event)
         
     except Exception as e:
         logger.error(f"Error creating event: {e}")
@@ -69,7 +88,11 @@ async def create_event_with_snapshot(
     try:
         import json
         from app.models import EventCreate
-        
+
+        # Debug: Log what we received
+        logger.info(f"Received event_data length: {len(event_data)}")
+        logger.info(f"Received snapshot filename: {snapshot.filename}, content_type: {snapshot.content_type}")
+
         # Parse event data
         event_dict = json.loads(event_data)
         event_create = EventCreate(**event_dict)
@@ -108,7 +131,7 @@ async def get_events(
             gate_id=gate_id
         )
         
-        return [EventResponse.from_orm(event) for event in events]
+        return [_add_local_timestamp(event) for event in events]
         
     except Exception as e:
         logger.error(f"Error retrieving events: {e}")
@@ -125,7 +148,7 @@ async def get_event(event_id: int, db=Depends(get_db)):
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
         
-        return EventResponse.from_orm(event)
+        return _add_local_timestamp(event)
         
     except HTTPException:
         raise

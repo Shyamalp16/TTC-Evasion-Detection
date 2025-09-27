@@ -72,6 +72,7 @@ class EventResponse(EventBase):
     snapshot_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    timestamp_local: Optional[str] = None
     
     class Config:
         from_attributes = True

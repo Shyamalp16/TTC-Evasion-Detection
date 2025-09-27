@@ -134,22 +134,84 @@ class EdgeDevice:
                         )
                         self._last_debug_log = now
 
-            # Create detection events only for persons who crossed the gate
+            # Handle gate crossings and create appropriate events
             if crossed_person_ids:
                 logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
 
-                # Create a single detection event for all crossings in this frame batch
-                crossing_detections = []
+                # Separate crossings by direction
+                evasion_crossings = []
+                normal_crossings = []
+
+                # Check each crossed person to see their crossing direction
                 for camera_id, detections in detection_results.items():
                     for detection in detections:
                         person_id = detection.get('person_id')
                         if person_id in crossed_person_ids:
-                            crossing_detections.append(detection)
+                            # Find the person in the tracker to check crossing direction
+                            if hasattr(self, 'detection_engine') and hasattr(self.detection_engine, 'person_tracker'):
+                                tracker = self.detection_engine.person_tracker
+                                if person_id in tracker.tracked_persons:
+                                    person = tracker.tracked_persons[person_id]
+                                    if person.crossing_direction == "right":
+                                        evasion_crossings.append(detection)
+                                    else:
+                                        normal_crossings.append(detection)
 
-                if crossing_detections:
+                # Create detection events for normal crossings
+                if normal_crossings:
                     await self.event_processor.add_detection_event(
-                        camera_id=0,  # Use camera 0 as primary for gate events
-                        detections=crossing_detections
+                        camera_id=settings.primary_camera_id,
+                        detections=normal_crossings
+                    )
+
+                # Create evasion events for left-to-right crossings
+                if evasion_crossings:
+                    logger.warning(f"Detected {len(evasion_crossings)} potential fare evasions (left-to-right crossings)")
+
+                    import cv2
+
+                    current_time = time.time()
+                    camera_id = settings.primary_camera_id
+
+                    # Capture snapshot from the primary camera frame for evasion events only
+                    snapshot_data = None
+                    primary_frame = frame_lookup.get(camera_id)
+                    if primary_frame is not None:
+                        # Encode frame as JPEG
+                        success, encoded_image = cv2.imencode('.jpg', primary_frame)
+                        if success:
+                            snapshot_data = encoded_image.tobytes()
+                            logger.debug(f"Captured evasion snapshot: {len(snapshot_data)} bytes")
+                        else:
+                            logger.warning("Failed to encode evasion snapshot")
+
+                    # Send evasion event directly to server (following EventCreate schema)
+                    simple_evasion_data = {
+                        "gate_id": settings.gate_id,
+                        "station_id": settings.station_id,
+                        "event_type": "evasion",
+                        "timestamp": current_time,  # Unix timestamp (server handles conversion)
+                        "camera_id": camera_id,
+                        "evasion_confidence": 1.0,
+                        "num_detections": len(evasion_crossings),
+                        "event_metadata": {
+                            "detections": evasion_crossings,  # Put detections in metadata
+                            "confidence_scores": [d.get("confidence", 0) for d in evasion_crossings],
+                            "crossing_direction": "left_to_right",
+                            "detection_method": "computer_vision",
+                            "event_id": f"cv_evasion_{int(current_time)}"
+                        }
+                    }
+
+                    # Send to server with snapshot for evasion events
+                    asyncio.create_task(
+                        self.server_client.send_event(simple_evasion_data, snapshot_data)
+                    )
+
+                    # Also send detection events
+                    await self.event_processor.add_detection_event(
+                        camera_id=camera_id,
+                        detections=evasion_crossings
                     )
             
             # Check for batched detections to send

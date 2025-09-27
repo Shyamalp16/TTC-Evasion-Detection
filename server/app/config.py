@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: str = "logs/server.log"
     
+    # Timezone
+    time_zone: str = "America/Toronto"
+
     # Data Retention
     event_retention_days: int = 90
     snapshot_retention_days: int = 30

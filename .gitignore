@@ -4,3 +4,5 @@
 /edge/*.pt
 /edge/logs/*
 /edge/models/*
+/TTC/*
+*.jpg

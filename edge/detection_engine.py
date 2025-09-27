@@ -21,17 +21,17 @@ class TrackedPerson:
         self.exited_frame = False  # Track if person has left the frame
         self.frames_at_edge = 0  # Track how long person has been at frame edge
         # Track position relative to gate line
-        _, y1, _, y2 = bbox
-        center_y = (y1 + y2) / 2
-        self.relative_position = center_y / frame_height  # 0-1 normalized
+        x1, _, x2, _ = bbox
+        center_x = (x1 + x2) / 2
+        self.relative_position = center_x / frame_width  # 0-1 normalized
 
     def update_position(self, bbox: List[int], frame_height: int, frame_width: int):
         """Update person's position and check for gate crossing."""
         self.bbox = bbox
         x1, y1, x2, y2 = bbox
-        center_y = (y1 + y2) / 2
+        center_x = (x1 + x2) / 2
         old_relative = self.relative_position
-        self.relative_position = center_y / frame_height
+        self.relative_position = center_x / frame_width
 
         # Check if person has left the frame boundaries
         margin = settings.person_exit_margin
@@ -78,22 +78,24 @@ class TrackedPerson:
                 self.frames_at_edge = 0
 
         # Check for crossing
-        gate_line = settings.gate_crossing_line_y
-        hysteresis = settings.gate_crossing_hysteresis / frame_height
+        gate_line = settings.gate_crossing_line_x
+        hysteresis = settings.gate_crossing_hysteresis / frame_width
 
-        if settings.gate_crossing_direction == "down":
-            # Person moving from top to bottom (entering)
+        if settings.gate_crossing_direction == "right":
+            # Person moving from left to right (evasion)
             if old_relative < gate_line - hysteresis and self.relative_position > gate_line + hysteresis:
                 if not self.crossed_gate:
                     self.crossed_gate = True
-                    self.crossing_direction = "down"
+                    self.crossing_direction = "right"
+                    logger.info(f"Person {self.person_id} crossed gate from left to right (evasion)")
                     return True
-        elif settings.gate_crossing_direction == "up":
-            # Person moving from bottom to top (exiting)
+        elif settings.gate_crossing_direction == "left":
+            # Person moving from right to left
             if old_relative > gate_line + hysteresis and self.relative_position < gate_line - hysteresis:
                 if not self.crossed_gate:
                     self.crossed_gate = True
-                    self.crossing_direction = "up"
+                    self.crossing_direction = "left"
+                    logger.info(f"Person {self.person_id} crossed gate from right to left")
                     return True
 
         return False
@@ -382,10 +384,10 @@ class DetectionEngine:
         # Draw gate crossing line if enabled
         if settings.enable_gate_crossing:
             frame_height, frame_width = frame.shape[:2]
-            gate_y = int(settings.gate_crossing_line_y * frame_height)
-            cv2.line(annotated_frame, (0, gate_y), (frame_width, gate_y), (255, 0, 0), 2)
+            gate_x = int(settings.gate_crossing_line_x * frame_width)
+            cv2.line(annotated_frame, (gate_x, 0), (gate_x, frame_height), (255, 0, 0), 2)
             cv2.putText(annotated_frame, f"Gate Line ({settings.gate_crossing_direction})",
-                       (10, gate_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                       (gate_x + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         for detection in detections[:20]:  # avoid drawing too many
             x1, y1, x2, y2 = detection["bbox"]

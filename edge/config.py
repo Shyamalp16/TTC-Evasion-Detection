@@ -21,6 +21,7 @@ class Settings(BaseSettings):
         # "rtsp://admin:password@192.168.1.100:554/stream1",
         # "rtsp://admin:password@192.168.1.101:554/stream1"
     ]
+    primary_camera_id: int = 0  # Primary camera for snapshots and events
     camera_timeout: int = 10
     
     # Detection Settings
@@ -36,8 +37,8 @@ class Settings(BaseSettings):
 
     # Gate Crossing Settings
     enable_gate_crossing: bool = True
-    gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where gate crossing line is drawn
-    gate_crossing_direction: str = "down"  # "up" or "down" - direction of crossing (person moving from top to bottom or bottom to top)
+    gate_crossing_line_x: float = 0.5  # Horizontal position (0-1) where gate crossing line is drawn
+    gate_crossing_direction: str = "right"  # "left" or "right" - direction of crossing (person moving from left to right or right to left)
     gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
     person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
     person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
@@ -55,8 +56,8 @@ class Settings(BaseSettings):
     
     # Gate Crossing Settings
     enable_gate_crossing: bool = True
-    gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where gate crossing line is drawn
-    gate_crossing_direction: str = "down"  # "up" or "down" - direction of crossing (person moving from top to bottom or bottom to top)
+    gate_crossing_line_x: float = 0.5  # Horizontal position (0-1) where gate crossing line is drawn
+    gate_crossing_direction: str = "right"  # "left" or "right" - direction of crossing (person moving from left to right or right to left)
     gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
     person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
     person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks

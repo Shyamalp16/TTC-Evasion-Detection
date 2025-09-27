@@ -25,8 +25,7 @@ class ServerClient:
             self.session = aiohttp.ClientSession(
                 timeout=self.timeout,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {self.api_key}"
                 }
             )
             logger.info("Server client initialized")
@@ -70,6 +69,64 @@ class ServerClient:
             logger.error(f"Error sending detection event: {e}")
             return False
     
+    async def send_event(self, event_data: Dict[str, Any], snapshot_data: Optional[bytes] = None) -> bool:
+        """Send a single event to the server."""
+        if not self.session:
+            logger.error("Server client not initialized")
+            return False
+
+        try:
+            if snapshot_data:
+                # Use the with-snapshot endpoint
+                url = f"{self.base_url}/events/with-snapshot"
+
+                # Convert event_data to JSON string for form data
+                import json
+                event_data_json = json.dumps(event_data)
+
+                # Create multipart form data
+                data = aiohttp.FormData()
+
+                # Add the JSON data as a form field
+                data.add_field('event_data', event_data_json)
+
+                # Add the image data as a file field
+                data.add_field('snapshot', snapshot_data, filename='evasion_snapshot.jpg', content_type='image/jpeg')
+
+                async with self.session.post(url, data=data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        event_id = result.get('event_id') or result.get('id')
+                        logger.warning(f"Event with snapshot sent: {event_id}")
+                        # Verify snapshot persisted on server (non-blocking)
+                        if event_id is not None:
+                            asyncio.create_task(self._verify_snapshot_on_server(int(event_id)))
+                        return True
+                    else:
+                        # Log the response content for debugging
+                        try:
+                            error_content = await response.text()
+                            logger.error(f"Failed to send event with snapshot: {response.status} - {error_content}")
+                        except Exception as e:
+                            logger.error(f"Failed to send event with snapshot: {response.status} - Error reading response: {e}")
+                        return False
+            else:
+                # Use the regular events endpoint
+                url = f"{self.base_url}/events"
+
+                async with self.session.post(url, json=event_data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        logger.info(f"Event sent: {result.get('id', 'unknown')}")
+                        return True
+                    else:
+                        logger.error(f"Failed to send event: {response.status}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"Error sending event: {e}")
+            return False
+
     async def send_detection_batch(self, batch_data: List[Dict[str, Any]]) -> bool:
         """Send batched detection events to server."""
         if not self.session:
@@ -157,15 +214,24 @@ class ServerClient:
                 }
             }
             
-            # If snapshot data is provided, send as multipart
+            # If snapshot data is provided, send as multipart to the with-snapshot endpoint
             if snapshot_data:
+                url = f"{self.base_url}/events/with-snapshot"
                 data = aiohttp.FormData()
-                data.add_field('event_data', json.dumps(payload), content_type='application/json')
+
+                # Add the JSON data as a form field
+                data.add_field('event_data', json.dumps(payload))
+
+                # Add the image data as a file field
                 data.add_field('snapshot', snapshot_data, filename='snapshot.jpg', content_type='image/jpeg')
-                
+
                 async with self.session.post(url, data=data) as response:
                     if response.status == 200:
-                        logger.warning(f"Evasion event with snapshot sent: {evasion_data.get('event_id')}")
+                        result = await response.json()
+                        event_id = result.get('event_id') or result.get('id')
+                        logger.warning(f"Evasion event with snapshot sent: {event_id}")
+                        if event_id is not None:
+                            asyncio.create_task(self._verify_snapshot_on_server(int(event_id)))
                         return True
                     else:
                         logger.error(f"Failed to send evasion event: {response.status}")
@@ -206,3 +272,19 @@ class ServerClient:
         if self.session:
             await self.session.close()
             logger.info("Server client closed")
+
+    async def _verify_snapshot_on_server(self, event_id: int) -> None:
+        """Fetch event and log snapshot_path for verification."""
+        if not self.session:
+            return
+        try:
+            url = f"{self.base_url}/events/{event_id}"
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    snapshot_path = data.get('snapshot_path')
+                    logger.info(f"Verified event {event_id}, snapshot_path: {snapshot_path}")
+                else:
+                    logger.warning(f"Could not verify snapshot for event {event_id}: HTTP {response.status}")
+        except Exception as e:
+            logger.warning(f"Snapshot verification failed for event {event_id}: {e}")
