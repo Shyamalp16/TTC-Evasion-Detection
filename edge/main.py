@@ -142,6 +142,16 @@ class EdgeDevice:
             if crossed_person_ids:
                 logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
 
+                # Update track state in rules engine
+                for camera_id, detections in detection_results.items():
+                    for detection in detections:
+                        person_id = detection.get('person_id')
+                        if person_id is not None:
+                            # Update track state with ROI information
+                            validator_roi = self.detection_engine.validator_roi
+                            if validator_roi:
+                                self.rules.update_track(frame, detection, tuple(validator_roi))
+
                 # Separate crossings by direction
                 evasion_crossings = []
                 normal_crossings = []
@@ -217,7 +227,10 @@ class EdgeDevice:
                         camera_id=camera_id,
                         detections=evasion_crossings
                     )
-            
+
+            # Periodically cleanup old tracks from rules engine
+            self.rules.cleanup_old_tracks()
+
             # Check for batched detections to send
             await self._send_batched_detections()
             
@@ -229,11 +242,9 @@ class EdgeDevice:
         for camera_id, frame in frames:
             detections = self._last_detections.get(camera_id) or []
             try:
-                if detections:
-                    annotated = self.detection_engine.draw_detections(frame, detections)
-                    cv2.imshow(f"Camera {camera_id}", annotated)
-                else:
-                    cv2.imshow(f"Camera {camera_id}", frame)
+                # Always draw detections (which includes ROIs) even with empty detections list
+                annotated = self.detection_engine.draw_detections(frame, detections)
+                cv2.imshow(f"Camera {camera_id}", annotated)
             except Exception:
                 pass
     
