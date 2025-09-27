@@ -35,6 +35,59 @@ class ServerClient:
             logger.error(f"Failed to initialize server client: {e}")
             return False
     
+    def _build_event_payload(self, event_data: Dict[str, Any], default_event_type: Optional[str] = None) -> Dict[str, Any]:
+        """Normalize arbitrary event_data into server's EventCreate schema payload."""
+        from datetime import datetime, timezone
+
+        payload: Dict[str, Any] = {
+            "gate_id": settings.gate_id,
+            "station_id": settings.station_id,
+            "event_type": event_data.get("event_type") or default_event_type or "detection",
+        }
+
+        ts = event_data.get("timestamp")
+        if isinstance(ts, (int, float)):
+            try:
+                payload["timestamp"] = datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+            except Exception:
+                # If conversion fails, omit timestamp so server sets it
+                pass
+        elif isinstance(ts, str) and ts:
+            payload["timestamp"] = ts
+
+        camera_id = event_data.get("camera_id")
+        if isinstance(camera_id, int):
+            payload["camera_id"] = camera_id
+
+        ev_conf = event_data.get("evasion_confidence")
+        if isinstance(ev_conf, (int, float)):
+            payload["evasion_confidence"] = float(ev_conf)
+
+        # num_detections from provided value or derived from detections list
+        num_detections = event_data.get("num_detections")
+        if not isinstance(num_detections, int):
+            dets = event_data.get("detections")
+            if isinstance(dets, list):
+                num_detections = len(dets)
+        if isinstance(num_detections, int):
+            payload["num_detections"] = num_detections
+
+        # Merge metadata
+        metadata: Dict[str, Any] = {}
+        if isinstance(event_data.get("event_metadata"), dict):
+            metadata.update(event_data["event_metadata"])  # type: ignore[arg-type]
+
+        # Pull through commonly used extra fields into metadata bucket
+        for key in ("detections", "detection_events", "gate_event", "confidence_scores", "crossing_direction", "detection_method", "event_id"):
+            value = event_data.get(key)
+            if value is not None:
+                metadata[key] = value
+
+        if metadata:
+            payload["event_metadata"] = metadata
+
+        return payload
+    
     async def send_detection_event(self, event_data: Dict[str, Any]) -> bool:
         """Send detection event to server."""
         if not self.session:
@@ -44,25 +97,23 @@ class ServerClient:
         try:
             url = f"{self.base_url}/events"
             
-            payload = {
-                "gate_id": settings.gate_id,
-                "station_id": settings.station_id,
+            payload = self._build_event_payload({
+                **event_data,
                 "event_type": "detection",
-                "timestamp": event_data.get("timestamp"),
-                "camera_id": event_data.get("camera_id"),
-                "detections": event_data.get("detections", []),
-                "metadata": {
-                    "confidence_scores": [d.get("confidence", 0) for d in event_data.get("detections", [])],
-                    "num_detections": len(event_data.get("detections", []))
-                }
-            }
+                "num_detections": len(event_data.get("detections", [])),
+                "confidence_scores": [d.get("confidence", 0) for d in event_data.get("detections", [])],
+            }, default_event_type="detection")
             
             async with self.session.post(url, json=payload) as response:
                 if response.status == 200:
                     logger.debug(f"Detection event sent successfully")
                     return True
                 else:
-                    logger.error(f"Failed to send detection event: {response.status}")
+                    try:
+                        error_text = await response.text()
+                    except Exception:
+                        error_text = "<no body>"
+                    logger.error(f"Failed to send detection event: {response.status} - {error_text}")
                     return False
                     
         except Exception as e:
@@ -82,7 +133,8 @@ class ServerClient:
 
                 # Convert event_data to JSON string for form data
                 import json
-                event_data_json = json.dumps(event_data)
+                payload = self._build_event_payload(event_data)
+                event_data_json = json.dumps(payload)
 
                 # Create multipart form data
                 data = aiohttp.FormData()
@@ -113,14 +165,18 @@ class ServerClient:
             else:
                 # Use the regular events endpoint
                 url = f"{self.base_url}/events"
-
-                async with self.session.post(url, json=event_data) as response:
+                payload = self._build_event_payload(event_data)
+                async with self.session.post(url, json=payload) as response:
                     if response.status == 200:
                         result = await response.json()
                         logger.info(f"Event sent: {result.get('id', 'unknown')}")
                         return True
                     else:
-                        logger.error(f"Failed to send event: {response.status}")
+                        try:
+                            error_text = await response.text()
+                        except Exception:
+                            error_text = "<no body>"
+                        logger.error(f"Failed to send event: {response.status} - {error_text}")
                         return False
 
         except Exception as e:
@@ -138,24 +194,24 @@ class ServerClient:
             success_count = 0
             for event_data in batch_data:
                 try:
-                    payload = {
-                        "gate_id": settings.gate_id,
-                        "station_id": settings.station_id,
+                    payload = self._build_event_payload({
                         "event_type": "detection",
-                        "timestamp": event_data["timestamp"],
-                        "camera_id": event_data["camera_id"],
-                        "detections": event_data["detections"],
-                        "event_metadata": {
-                            "confidence_scores": [d.get("confidence", 0) for d in event_data["detections"]],
-                            "num_detections": len(event_data["detections"])
-                        }
-                    }
+                        "timestamp": event_data.get("timestamp"),
+                        "camera_id": event_data.get("camera_id"),
+                        "detections": event_data.get("detections", []),
+                        "num_detections": len(event_data.get("detections", [])),
+                        "confidence_scores": [d.get("confidence", 0) for d in event_data.get("detections", [])],
+                    }, default_event_type="detection")
                     
                     async with self.session.post(f"{self.base_url}/events", json=payload) as response:
                         if response.status == 200:
                             success_count += 1
                         else:
-                            logger.warning(f"Failed to send individual detection: {response.status}")
+                            try:
+                                error_text = await response.text()
+                            except Exception:
+                                error_text = "<no body>"
+                            logger.warning(f"Failed to send individual detection: {response.status} - {error_text}")
                             
                 except Exception as e:
                     logger.warning(f"Error sending individual detection: {e}")
@@ -178,51 +234,18 @@ class ServerClient:
             return False
         
         try:
-            url = f"{self.base_url}/events"
-            
-            # Convert DetectionEvent objects to dictionaries for JSON serialization
-            detection_events_dict = []
-            for detection_event in evasion_data.get("detection_events", []):
-                detection_events_dict.append({
-                    "timestamp": detection_event.timestamp,
-                    "camera_id": detection_event.camera_id,
-                    "detections": detection_event.detections
-                })
-            
-            # Convert GateEvent object to dictionary
-            gate_event = evasion_data.get("gate_event")
-            gate_event_dict = {
-                "timestamp": gate_event.timestamp,
-                "gate_id": gate_event.gate_id,
-                "is_open": gate_event.is_open,
-                "event_type": gate_event.event_type
-            } if gate_event else None
-            
-            payload = {
-                "gate_id": settings.gate_id,
-                "station_id": settings.station_id,
+            # Normalize evasion payload
+            payload = self._build_event_payload({
+                **evasion_data,
                 "event_type": "evasion",
-                "timestamp": evasion_data.get("timestamp"),
-                "evasion_confidence": evasion_data.get("evasion_confidence"),
-                "detection_events": detection_events_dict,
-                "gate_event": gate_event_dict,
-                "event_id": evasion_data.get("event_id"),
-                "event_metadata": {
-                    "num_detection_events": len(detection_events_dict),
-                    "total_detections": sum(len(de["detections"]) for de in detection_events_dict),
-                    "evasion_confidence": evasion_data.get("evasion_confidence")
-                }
-            }
-            
+            }, default_event_type="evasion")
+
             # If snapshot data is provided, send as multipart to the with-snapshot endpoint
             if snapshot_data:
                 url = f"{self.base_url}/events/with-snapshot"
                 data = aiohttp.FormData()
-
-                # Add the JSON data as a form field
+                import json
                 data.add_field('event_data', json.dumps(payload))
-
-                # Add the image data as a file field
                 data.add_field('snapshot', snapshot_data, filename='snapshot.jpg', content_type='image/jpeg')
 
                 async with self.session.post(url, data=data) as response:
@@ -234,15 +257,24 @@ class ServerClient:
                             asyncio.create_task(self._verify_snapshot_on_server(int(event_id)))
                         return True
                     else:
-                        logger.error(f"Failed to send evasion event: {response.status}")
+                        try:
+                            error_text = await response.text()
+                        except Exception:
+                            error_text = "<no body>"
+                        logger.error(f"Failed to send evasion event: {response.status} - {error_text}")
                         return False
             else:
+                url = f"{self.base_url}/events"
                 async with self.session.post(url, json=payload) as response:
                     if response.status == 200:
                         logger.warning(f"Evasion event sent: {evasion_data.get('event_id')}")
                         return True
                     else:
-                        logger.error(f"Failed to send evasion event: {response.status}")
+                        try:
+                            error_text = await response.text()
+                        except Exception:
+                            error_text = "<no body>"
+                        logger.error(f"Failed to send evasion event: {response.status} - {error_text}")
                         return False
                         
         except Exception as e:

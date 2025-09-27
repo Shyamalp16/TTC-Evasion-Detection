@@ -66,14 +66,9 @@ class Settings(BaseSettings):
     person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
 
     # Pose/Gesture Settings
-    # Backend: "mediapipe" or "movenet" (tflite or tfhub)
+    # Backend: "mediapipe" only (movenet removed)
     pose_backend: str = "mediapipe"
     pose_score_threshold: float = 0.3
-    movenet_model_path: str = "edge/models/movenet_singlepose_lightning.tflite"
-    movenet_input_size: int = 256
-    movenet_num_threads: int = 2
-    movenet_use_tfhub: bool = False
-    movenet_tfhub_url: str = "https://tfhub.dev/google/movenet/singlepose/thunder/1"
 
     # MediaPipe Pose parameters
     mediapipe_model_complexity: int = 1
@@ -85,9 +80,6 @@ class Settings(BaseSettings):
     gesture_proximity_px: int = 60
     gesture_dwell_min_s: float = 0.25
     gesture_dwell_max_s: float = 1.0
-    gesture_relaxed_in_roi: bool = True
-    gesture_bbox_roi_hdist_px: int = 80
-    movenet_min_interval_s: float = 0.12
     pose_full_frame: bool = False
 
     # Overlay/Visualization

@@ -46,11 +46,6 @@ class EdgeDevice:
             logger.error("Failed to initialize detection engine")
             return False
         
-        # Preload pose backend to avoid first-frame stall
-        try:
-            self.rules.preload()
-        except Exception:
-            pass
 
         # Initialize server client
         if not await self.server_client.initialize():
@@ -128,15 +123,6 @@ class EdgeDevice:
                 if detections is not None:
                     self._last_detections[camera_id] = detections
 
-                # Update pose/gesture state for each tracked person (full-frame ROI)
-                try:
-                    if detections:
-                        h, w = frame.shape[:2]
-                        roi = (0, 0, max(0, w - 1), max(0, h - 1))
-                        for det in detections:
-                            self.rules.update_track(frame, det, roi)
-                except Exception:
-                    pass
 
                 # Log tracking info
                 if detections:
@@ -245,13 +231,9 @@ class EdgeDevice:
             try:
                 if detections:
                     annotated = self.detection_engine.draw_detections(frame, detections)
-                    # Draw pose overlays (joints/bones/keypoints)
-                    annotated = self.rules.draw_pose_overlays(annotated, detections)
                     cv2.imshow(f"Camera {camera_id}", annotated)
                 else:
-                    # Even without detections, optionally draw any cached poses
-                    annotated = self.rules.draw_pose_overlays(frame, [])
-                    cv2.imshow(f"Camera {camera_id}", annotated)
+                    cv2.imshow(f"Camera {camera_id}", frame)
             except Exception:
                 pass
     

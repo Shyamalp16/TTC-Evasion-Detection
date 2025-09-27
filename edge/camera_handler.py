@@ -39,7 +39,7 @@ class CameraHandler:
                 # Dev-friendly tuning (some backends ignore these)
                 if cap:
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    cap.set(cv2.CAP_PROP_FPS, 60)
+                    cap.set(cv2.CAP_PROP_FPS, 120)
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 
