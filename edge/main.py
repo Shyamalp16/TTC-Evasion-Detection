@@ -138,19 +138,63 @@ class EdgeDevice:
                         )
                         self._last_debug_log = now
 
+            # Update track state and run pose estimation for all detections
+            for camera_id, detections in detection_results.items():
+                for detection in detections:
+                    person_id = detection.get('person_id')
+                    if person_id is not None:
+                        # Update track state with ROI information
+                        validator_roi = self.detection_engine.validator_roi
+                        if validator_roi:
+                            self.rules.update_track(frame, detection, tuple(validator_roi))
+
+                        # Run pose estimation once per track (with cooldown)
+                        track_status = self.rules.get_status(person_id)
+                        current_time = time.time()
+                        last_pose_time = track_status.get("pose_timestamp", 0)
+                        pose_cooldown = 1.0  # seconds between pose updates
+
+                        # Only run pose estimation if we don't have recent pose data
+                        if current_time - last_pose_time > pose_cooldown:
+                            bbox = detection.get("bbox", [])
+                            if len(bbox) >= 4:
+                                try:
+                                    # Crop the person from the frame
+                                    x1, y1, x2, y2 = bbox
+                                    cropped_person = frame[y1:y2, x1:x2]
+
+                                    if cropped_person.size > 0:
+                                        # Run pose estimation
+                                        if self.detection_engine.pose_estimator is None:
+                                            continue
+
+                                        pose_result = self.detection_engine.pose_estimator.infer_pose(cropped_person)
+                                        if pose_result:
+                                            # Adjust keypoints back to full frame coordinates
+                                            adjusted_keypoints = {}
+                                            for name, kp in pose_result['keypoints'].items():
+                                                adjusted_keypoints[name] = {
+                                                    'x': kp['x'] + x1,
+                                                    'y': kp['y'] + y1,
+                                                    'z': kp['z'],
+                                                    'visibility': kp['visibility']
+                                                }
+
+                                            # Store pose in track state
+                                            track_status["pose_keypoints"] = adjusted_keypoints
+                                            track_status["pose_timestamp"] = current_time
+
+                                except Exception as e:
+                                    pass  # Silently handle pose estimation failures
+
+                        # Always use cached pose data for visualization if available
+                        cached_pose = track_status.get("pose_keypoints")
+                        if cached_pose:
+                            detection["pose_keypoints"] = cached_pose
+
             # Handle gate crossings and create appropriate events
             if crossed_person_ids:
                 logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
-
-                # Update track state in rules engine
-                for camera_id, detections in detection_results.items():
-                    for detection in detections:
-                        person_id = detection.get('person_id')
-                        if person_id is not None:
-                            # Update track state with ROI information
-                            validator_roi = self.detection_engine.validator_roi
-                            if validator_roi:
-                                self.rules.update_track(frame, detection, tuple(validator_roi))
 
                 # Separate crossings by direction
                 evasion_crossings = []

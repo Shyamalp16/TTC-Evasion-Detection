@@ -95,9 +95,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_file: str = "logs/edge_device.log"
-    enable_console_logs: bool = False  # reduce terminal overhead
+    enable_console_logs: bool = False  # disable console logs, use file logging
     console_log_level: str = "WARNING"
-    file_log_level: str = "INFO"
+    file_log_level: str = "DEBUG"
     
     # Privacy Settings
     snapshot_retention_days: int = 30

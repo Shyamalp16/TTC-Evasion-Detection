@@ -51,6 +51,7 @@ class ValidatorAndGateRules:
             center_x = (bbox[0] + bbox[2]) / 2
             center_y = (bbox[1] + bbox[3]) / 2
             inside_roi = self._point_in_roi((int(center_x), int(center_y)), validator_roi)
+
             track["inside_validator_roi"] = inside_roi
 
             # Update last seen timestamp

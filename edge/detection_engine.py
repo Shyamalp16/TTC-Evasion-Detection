@@ -6,11 +6,86 @@ import numpy as np
 import yaml
 import os
 from ultralytics import YOLO
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from loguru import logger
 from config import settings
 from ocsort import OCSortTracker, iou as iou_calc
 from roi import point_in_roi, crosses_line
+import mediapipe as mp
+
+
+class PoseEstimator:
+    """MediaPipe-based pose estimation for person tracking."""
+
+    def __init__(self):
+        self.pose = mp.solutions.pose.Pose(
+            model_complexity=settings.mediapipe_model_complexity,
+            min_detection_confidence=settings.mediapipe_min_detection_confidence,
+            min_tracking_confidence=settings.mediapipe_min_tracking_confidence
+        )
+        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils
+
+    def infer_pose(self, image: np.ndarray) -> Optional[Dict[str, Any]]:
+        """
+        Run pose estimation on an image.
+
+        Args:
+            image: RGB image array
+
+        Returns:
+            Dictionary with pose keypoints or None if no pose detected
+        """
+        try:
+            # Convert to RGB if needed
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_image = image
+
+            # Run pose estimation
+            results = self.pose.process(rgb_image)
+
+            if results.pose_landmarks:
+                keypoints = {}
+                h, w = image.shape[:2]
+
+                # Extract key landmarks (wrists, elbows, shoulders)
+                landmark_indices = {
+                    'nose': 0,
+                    'left_shoulder': 11,
+                    'right_shoulder': 12,
+                    'left_elbow': 13,
+                    'right_elbow': 14,
+                    'left_wrist': 15,
+                    'right_wrist': 16,
+                    'left_hip': 23,
+                    'right_hip': 24,
+                    'left_knee': 25,
+                    'right_knee': 26,
+                    'left_ankle': 27,
+                    'right_ankle': 28
+                }
+
+                for name, idx in landmark_indices.items():
+                    landmark = results.pose_landmarks.landmark[idx]
+                    keypoints[name] = {
+                        'x': int(landmark.x * w),
+                        'y': int(landmark.y * h),
+                        'z': landmark.z,
+                        'visibility': landmark.visibility
+                    }
+
+                return {
+                    'keypoints': keypoints,
+                    'landmarks': results.pose_landmarks,
+                    'timestamp': None
+                }
+
+        except Exception as e:
+            logger.debug(f"Pose estimation failed: {e}")
+
+        return None
 
 
 class TrackedPerson:
@@ -251,6 +326,14 @@ class DetectionEngine:
         self.gate_line = None
         self._load_roi_config()
 
+        # Initialize pose estimator
+        try:
+            self.pose_estimator = PoseEstimator()
+            logger.info("MediaPipe pose estimator initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize MediaPipe pose estimator: {e}")
+            self.pose_estimator = None
+
     def _load_roi_config(self):
         """Load ROI configuration from YAML file."""
         roi_config_path = os.path.join(os.path.dirname(__file__), "config", "rois.yaml")
@@ -471,6 +554,9 @@ class DetectionEngine:
             cv2.putText(annotated_frame, "Gate Line (ROI)", (x1 + 10, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
+        # Draw pose keypoints for tracks with pose data
+        self._draw_pose_keypoints(annotated_frame, detections)
+
         for detection in detections[:20]:  # avoid drawing too many
             x1, y1, x2, y2 = detection["bbox"]
             confidence = detection["confidence"]
@@ -494,7 +580,66 @@ class DetectionEngine:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         return annotated_frame
-    
+
+    def _draw_pose_keypoints(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> None:
+        """Draw pose keypoints and skeleton for tracks with pose data."""
+        for detection in detections:
+            pose_keypoints = detection.get("pose_keypoints")
+            if not pose_keypoints:
+                continue
+
+            # Define key connections for skeleton (simplified)
+            skeleton_connections = [
+                ('left_shoulder', 'right_shoulder'),
+                ('left_shoulder', 'left_elbow'),
+                ('left_elbow', 'left_wrist'),
+                ('right_shoulder', 'right_elbow'),
+                ('right_elbow', 'right_wrist'),
+                ('left_shoulder', 'left_hip'),
+                ('right_shoulder', 'right_hip'),
+                ('left_hip', 'right_hip'),
+                ('left_hip', 'left_knee'),
+                ('left_knee', 'left_ankle'),
+                ('right_hip', 'right_knee'),
+                ('right_knee', 'right_ankle'),
+                ('nose', 'left_shoulder'),
+                ('nose', 'right_shoulder'),
+            ]
+
+            # Draw skeleton connections
+            for start_name, end_name in skeleton_connections:
+                if start_name in pose_keypoints and end_name in pose_keypoints:
+                    start_kp = pose_keypoints[start_name]
+                    end_kp = pose_keypoints[end_name]
+
+                    if start_kp['visibility'] > 0.5 and end_kp['visibility'] > 0.5:
+                        cv2.line(frame,
+                                (start_kp['x'], start_kp['y']),
+                                (end_kp['x'], end_kp['y']),
+                                (255, 255, 255), 2)  # White skeleton lines
+
+            # Highlight key points (wrists, elbows, shoulders)
+            key_points = ['left_wrist', 'right_wrist', 'left_elbow', 'right_elbow',
+                         'left_shoulder', 'right_shoulder']
+
+            for point_name in key_points:
+                if point_name in pose_keypoints:
+                    kp = pose_keypoints[point_name]
+                    if kp['visibility'] > 0.5:
+                        # Color code different body parts
+                        if 'wrist' in point_name:
+                            color = (0, 255, 0)  # Green for wrists
+                            radius = 6
+                        elif 'elbow' in point_name:
+                            color = (0, 165, 255)  # Orange for elbows
+                            radius = 5
+                        else:  # shoulders
+                            color = (255, 0, 0)  # Red for shoulders
+                            radius = 4
+
+                        cv2.circle(frame, (kp['x'], kp['y']), radius, color, -1)  # Filled circle
+                        cv2.circle(frame, (kp['x'], kp['y']), radius + 2, (255, 255, 255), 2)  # White outline
+
     async def get_model_info(self) -> Dict[str, Any]:
         """Get model information."""
         if not self.is_initialized:
