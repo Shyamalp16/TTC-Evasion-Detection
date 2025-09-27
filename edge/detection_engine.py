@@ -583,10 +583,20 @@ class DetectionEngine:
 
     def _draw_pose_keypoints(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> None:
         """Draw pose keypoints and skeleton for tracks with pose data."""
+        frame_height, frame_width = frame.shape[:2]
+
         for detection in detections:
             pose_keypoints = detection.get("pose_keypoints")
             if not pose_keypoints:
                 continue
+
+            # Helper function to check if keypoint is visible in frame
+            def is_keypoint_visible(kp: Dict[str, Any], margin: int = 10) -> bool:
+                """Check if keypoint is within frame boundaries with margin."""
+                x, y = int(kp['x']), int(kp['y'])
+                return (margin <= x < frame_width - margin and
+                        margin <= y < frame_height - margin and
+                        kp['visibility'] > 0.5)
 
             # Define key connections for skeleton (simplified)
             skeleton_connections = [
@@ -606,26 +616,27 @@ class DetectionEngine:
                 ('nose', 'right_shoulder'),
             ]
 
-            # Draw skeleton connections
+            # Draw skeleton connections only for visible keypoints
             for start_name, end_name in skeleton_connections:
                 if start_name in pose_keypoints and end_name in pose_keypoints:
                     start_kp = pose_keypoints[start_name]
                     end_kp = pose_keypoints[end_name]
 
-                    if start_kp['visibility'] > 0.5 and end_kp['visibility'] > 0.5:
+                    # Only draw connection if BOTH keypoints are visible in frame
+                    if is_keypoint_visible(start_kp) and is_keypoint_visible(end_kp):
                         cv2.line(frame,
-                                (start_kp['x'], start_kp['y']),
-                                (end_kp['x'], end_kp['y']),
+                                (int(start_kp['x']), int(start_kp['y'])),
+                                (int(end_kp['x']), int(end_kp['y'])),
                                 (255, 255, 255), 2)  # White skeleton lines
 
-            # Highlight key points (wrists, elbows, shoulders)
+            # Highlight key points only if they're visible in frame
             key_points = ['left_wrist', 'right_wrist', 'left_elbow', 'right_elbow',
                          'left_shoulder', 'right_shoulder']
 
             for point_name in key_points:
                 if point_name in pose_keypoints:
                     kp = pose_keypoints[point_name]
-                    if kp['visibility'] > 0.5:
+                    if is_keypoint_visible(kp):
                         # Color code different body parts
                         if 'wrist' in point_name:
                             color = (0, 255, 0)  # Green for wrists
@@ -637,8 +648,8 @@ class DetectionEngine:
                             color = (255, 0, 0)  # Red for shoulders
                             radius = 4
 
-                        cv2.circle(frame, (kp['x'], kp['y']), radius, color, -1)  # Filled circle
-                        cv2.circle(frame, (kp['x'], kp['y']), radius + 2, (255, 255, 255), 2)  # White outline
+                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius, color, -1)  # Filled circle
+                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius + 2, (255, 255, 255), 2)  # White outline
 
     async def get_model_info(self) -> Dict[str, Any]:
         """Get model information."""

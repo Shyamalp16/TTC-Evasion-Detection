@@ -152,7 +152,7 @@ class EdgeDevice:
                         track_status = self.rules.get_status(person_id)
                         current_time = time.time()
                         last_pose_time = track_status.get("pose_timestamp", 0)
-                        pose_cooldown = 1.0  # seconds between pose updates
+                        pose_cooldown = 0.5  # seconds between pose updates
 
                         # Only run pose estimation if we don't have recent pose data
                         if current_time - last_pose_time > pose_cooldown:
