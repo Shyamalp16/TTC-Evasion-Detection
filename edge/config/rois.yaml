@@ -1,0 +1,19 @@
+# ROI Configuration for SnitchSystem Edge Device
+# Coordinates are in pixels relative to camera frame
+
+# validator_roi: Bounding box where validator/tap machine is located
+# Format: [x1, y1, x2, y2] where (x1,y1) is top-left, (x2,y2) is bottom-right
+# Centered square ROI for typical 640x480 camera resolution
+validator_roi:
+  - 500   # x1 - left coordinate (centered horizontally)
+  - 365   # y1 - top coordinate (centered vertically)
+  - 800   # x2 - right coordinate (250px wide square)
+  - 635   # y2 - bottom coordinate (250px tall square)
+
+# gate_line: Line coordinates just past barrier for gate crossing detection
+# Format: [x1, y1, x2, y2] where (x1,y1) is start point, (x2,y2) is end point
+gate_line:
+  - 640   # x1 - start x coordinate (typically center of frame)
+  - 240   # y1 - start y coordinate
+  - 640   # x2 - end x coordinate (vertical line at center)
+  - 480   # y2 - end y coordinate

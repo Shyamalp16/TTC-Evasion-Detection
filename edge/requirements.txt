@@ -25,6 +25,7 @@ aiohttp
 loguru
 pydantic
 python-dotenv
+PyYAML
 
 # System Monitoring
 psutil

@@ -3,11 +3,14 @@ YOLO detection engine for person detection.
 """
 import cv2
 import numpy as np
+import yaml
+import os
 from ultralytics import YOLO
 from typing import List, Tuple, Dict, Any
 from loguru import logger
 from config import settings
 from ocsort import OCSortTracker, iou as iou_calc
+from roi import point_in_roi, crosses_line
 
 
 class TrackedPerson:
@@ -242,7 +245,32 @@ class DetectionEngine:
         self.person_tracker = PersonTracker() if settings.enable_gate_crossing else None
         # OC-SORT style trackers per camera for stable IDs
         self.ocsort_trackers: Dict[int, OCSortTracker] = {}
-        
+
+        # Load ROI configuration
+        self.validator_roi = None
+        self.gate_line = None
+        self._load_roi_config()
+
+    def _load_roi_config(self):
+        """Load ROI configuration from YAML file."""
+        roi_config_path = os.path.join(os.path.dirname(__file__), "config", "rois.yaml")
+        try:
+            if os.path.exists(roi_config_path):
+                with open(roi_config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+
+                self.validator_roi = config.get('validator_roi')
+                self.gate_line = config.get('gate_line')
+
+                if self.validator_roi:
+                    logger.info(f"Loaded validator ROI: {self.validator_roi}")
+                if self.gate_line:
+                    logger.info(f"Loaded gate line: {self.gate_line}")
+            else:
+                logger.warning(f"ROI config file not found: {roi_config_path}")
+        except Exception as e:
+            logger.error(f"Failed to load ROI config: {e}")
+
     async def initialize(self) -> bool:
         """Initialize YOLO model."""
         try:
@@ -428,13 +456,20 @@ class DetectionEngine:
         """Draw detection bounding boxes on frame."""
         annotated_frame = frame.copy()
 
-        # Draw gate crossing line if enabled
-        if settings.enable_gate_crossing:
-            frame_height, frame_width = frame.shape[:2]
-            gate_x = int(settings.gate_crossing_line_x * frame_width)
-            cv2.line(annotated_frame, (gate_x, 0), (gate_x, frame_height), (255, 0, 0), 2)
-            cv2.putText(annotated_frame, f"Gate Line ({settings.gate_crossing_direction})",
-                       (gate_x + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+        # Draw validator ROI if loaded
+        if self.validator_roi:
+            x1, y1, x2, y2 = self.validator_roi
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 3)  # Cyan color, thicker line
+            cv2.putText(annotated_frame, "Validator ROI", (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        # Draw gate line from ROI config if loaded
+        if self.gate_line:
+            x1, y1, x2, y2 = self.gate_line
+            cv2.line(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 3)  # Yellow color, thicker line
+            cv2.putText(annotated_frame, "Gate Line (ROI)", (x1 + 10, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         for detection in detections[:20]:  # avoid drawing too many
             x1, y1, x2, y2 = detection["bbox"]
