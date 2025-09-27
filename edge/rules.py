@@ -14,6 +14,7 @@ Public API:
         get_status(track_id) -> dict
 """
 from typing import Dict, Any, Tuple, Optional, List
+import time
 
 from loguru import logger
 
@@ -31,6 +32,8 @@ class ValidatorAndGateRules:
                 "tap_confirmed": False,
                 "inside_validator_roi": False,
                 "gesture_history": {},
+                "wrist_history": [],  # Store wrist positions over time for stability detection
+                "last_tap_check": 0.0,  # Timestamp of last tap gesture check
             }
             self._tracks[track_id] = st
         return st
@@ -58,6 +61,115 @@ class ValidatorAndGateRules:
             import time
             track["last_seen_ts"] = time.time()
 
+            # Check for tap gesture if pose data is available
+            pose_keypoints = detection.get("pose_keypoints")
+            if pose_keypoints:
+                self._check_tap_gesture(track_id, pose_keypoints, validator_roi)
+
+    def _check_tap_gesture(self, track_id: int, pose_keypoints: Dict[str, Any], validator_roi: Tuple[int, int, int, int]) -> None:
+        """Check for tap gesture based on wrist position and stability."""
+        track = self._get_track(track_id)
+        current_time = time.time()
+
+        # Determine dominant wrist (higher confidence)
+        left_wrist = pose_keypoints.get('left_wrist')
+        right_wrist = pose_keypoints.get('right_wrist')
+
+        if not left_wrist or not right_wrist:
+            return  # Need both wrists for comparison
+
+        # Choose dominant wrist based on visibility confidence
+        if left_wrist['visibility'] > right_wrist['visibility']:
+            dominant_wrist = left_wrist
+            dominant_name = 'left_wrist'
+            elbow_name = 'left_elbow'
+            shoulder_name = 'left_shoulder'
+        else:
+            dominant_wrist = right_wrist
+            dominant_name = 'right_wrist'
+            elbow_name = 'right_elbow'
+            shoulder_name = 'right_shoulder'
+
+        wrist_x, wrist_y = dominant_wrist['x'], dominant_wrist['y']
+
+        # Rule 1: Wrist must be inside validator_roi
+        if not self._point_in_roi((int(wrist_x), int(wrist_y)), validator_roi):
+            return
+
+        # Get elbow and shoulder positions for forward extension check
+        elbow = pose_keypoints.get(elbow_name)
+        shoulder = pose_keypoints.get(shoulder_name)
+
+        if not elbow or not shoulder:
+            return
+
+        # Rule 2: Wrist horizontally extended forward (ahead of elbow & shoulder)
+        # For right-side dominant wrist, check if wrist_x > elbow_x > shoulder_x (moving right)
+        # For left-side dominant wrist, check if wrist_x < elbow_x < shoulder_x (moving left)
+        if dominant_name == 'right_wrist':
+            extended_forward = wrist_x > elbow['x'] > shoulder['x']
+        else:  # left_wrist
+            extended_forward = wrist_x < elbow['x'] < shoulder['x']
+
+        if not extended_forward:
+            return
+
+        # Rule 3: Wrist vertical position ~ torso/waist level
+        # Check if wrist Y is between shoulder Y and approximate hip level
+        shoulder_y = shoulder['y']
+        # Estimate hip level (roughly 1.5x shoulder-to-elbow distance below shoulder)
+        elbow_to_shoulder_dist = abs(elbow['y'] - shoulder_y)
+        estimated_hip_y = shoulder_y + (elbow_to_shoulder_dist * 1.5)
+
+        # Wrist should be between shoulder level and hip level (with some tolerance)
+        torso_level = shoulder_y <= wrist_y <= estimated_hip_y
+
+        if not torso_level:
+            return
+
+        # Rule 4: Wrist remains stable for 0.3-0.5s
+        # Add current wrist position to history
+        wrist_position = {'x': wrist_x, 'y': wrist_y, 'timestamp': current_time}
+        track['wrist_history'].append(wrist_position)
+
+        # Keep only last 1 second of wrist history
+        track['wrist_history'] = [pos for pos in track['wrist_history']
+                                 if current_time - pos['timestamp'] < 1.0]
+
+        # Need at least 0.3 seconds of history for stability check
+        if len(track['wrist_history']) < 3:  # At least 3 frames
+            return
+
+        # Calculate position variance over the last 0.3-0.5 seconds
+        recent_positions = [pos for pos in track['wrist_history']
+                           if current_time - pos['timestamp'] <= 0.5]
+
+        if len(recent_positions) < 3:
+            return
+
+        # Calculate variance in wrist position
+        x_positions = [pos['x'] for pos in recent_positions]
+        y_positions = [pos['y'] for pos in recent_positions]
+
+        x_variance = max(x_positions) - min(x_positions)
+        y_variance = max(y_positions) - min(y_positions)
+        total_variance = (x_variance ** 2 + y_variance ** 2) ** 0.5
+
+        # Stability threshold (pixels)
+        stability_threshold = 15.0  # Adjust as needed
+
+        wrist_stable = total_variance < stability_threshold
+
+        # Check if stable for at least 0.3 seconds
+        stability_duration = current_time - recent_positions[0]['timestamp']
+        stable_duration_met = stability_duration >= 0.3
+
+        # If all conditions met, confirm tap
+        if wrist_stable and stable_duration_met:
+            track["tap_confirmed"] = True
+            logger.info(f"Tap Detected for track {track_id}")
+            logger.debug(f"Tap gesture details: wrist stable for {stability_duration:.2f}s, variance: {total_variance:.1f}px")
+
     def _point_in_roi(self, point: Tuple[int, int], roi: Tuple[int, int, int, int]) -> bool:
         """Check if a point is within a bounding box ROI."""
         x, y = point
@@ -65,8 +177,16 @@ class ValidatorAndGateRules:
         return x1 <= x <= x2 and y1 <= y <= y2
 
     def on_crossing(self, track_id: int) -> Dict[str, Any]:
-        # Without pose/gesture detection, always classify as evasion
-        return {"classification": "evasion", "tap_confirmed": False}
+        """Classify crossing based on tap gesture confirmation."""
+        track = self._get_track(track_id)
+        tap_confirmed = track.get("tap_confirmed", False)
+
+        if tap_confirmed:
+            classification = "pass"
+        else:
+            classification = "evasion"
+
+        return {"classification": classification, "tap_confirmed": tap_confirmed}
 
     def get_status(self, track_id: int) -> Dict[str, Any]:
         return self._get_track(track_id).copy()
