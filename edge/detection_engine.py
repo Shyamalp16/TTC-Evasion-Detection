@@ -7,6 +7,7 @@ from ultralytics import YOLO
 from typing import List, Tuple, Dict, Any
 from loguru import logger
 from config import settings
+from ocsort import OCSortTracker, iou as iou_calc
 
 
 class TrackedPerson:
@@ -237,7 +238,10 @@ class DetectionEngine:
         self.is_initialized = False
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
+        # Legacy simple tracker retained for gate-crossing logic if needed
         self.person_tracker = PersonTracker() if settings.enable_gate_crossing else None
+        # OC-SORT style trackers per camera for stable IDs
+        self.ocsort_trackers: Dict[int, OCSortTracker] = {}
         
     async def initialize(self) -> bool:
         """Initialize YOLO model."""
@@ -365,8 +369,51 @@ class DetectionEngine:
 
         for camera_id, frame in frames:
             detections = await self.detect_persons(frame)
-            # Always call tracker.update so it can age-out tracks even when
-            # there are no detections in this frame.
+
+            # OC-SORT: assign track IDs for this camera's detections
+            if detections:
+                det_array = np.array([d["bbox"] for d in detections], dtype=float)
+            else:
+                det_array = np.empty((0, 4), dtype=float)
+
+            # Get tracker for this camera
+            tracker = self.ocsort_trackers.get(camera_id)
+            if tracker is None:
+                tracker = OCSortTracker(
+                    max_age=max(5, settings.person_tracking_max_age),
+                    min_hits=2,
+                    iou_threshold=max(0.1, settings.person_tracking_iou_threshold),
+                )
+                self.ocsort_trackers[camera_id] = tracker
+
+            tracked = tracker.update(det_array)
+            # Map from bbox to id with a tolerance using IoU to pair back to detection dicts
+            id_assigned = [False] * len(detections)
+            for trk_bbox, trk_id in tracked:
+                # Find best matching detection by IoU
+                best_idx = -1
+                best_iou = 0.0
+                for idx, det in enumerate(detections):
+                    if id_assigned[idx]:
+                        continue
+                    iou_val = iou_calc(np.array([int(v) for v in trk_bbox], dtype=float), np.array(det["bbox"], dtype=float))
+                    if iou_val > best_iou:
+                        best_iou = iou_val
+                        best_idx = idx
+                if best_idx >= 0 and best_iou >= 0.1:
+                    detections[best_idx]["person_id"] = int(trk_id)
+                    id_assigned[best_idx] = True
+
+            # Fallback: any unassigned detections get unique incremental IDs beyond current max
+            current_max_id = max([int(t[1]) for t in tracked], default=0)
+            next_id = current_max_id + 1
+            for idx, assigned in enumerate(id_assigned):
+                if not assigned and idx < len(detections):
+                    detections[idx]["person_id"] = int(next_id)
+                    next_id += 1
+
+            # Maintain gate-crossing logic using legacy tracker state if enabled
+            crossed_person_ids = []
             if self.person_tracker:
                 frame_height, frame_width = frame.shape[:2]
                 tracked_detections, crossed_person_ids = self.person_tracker.update(detections, frame_height, frame_width)
