@@ -57,13 +57,44 @@ class Settings(BaseSettings):
     # Gate Crossing Settings
     enable_gate_crossing: bool = True
     gate_crossing_line_x: float = 0.5  # Horizontal position (0-1) where gate crossing line is drawn
-    gate_crossing_direction: str = "right"  # "left" or "right" - direction of crossing (person moving from left to right or right to left)
+    gate_crossing_direction: str = "right"  # "left" or "right"
     gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
     person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
     person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
     person_exit_edge_margin: int = 15  # Pixels from frame edge to consider as potentially exiting
     person_exit_edge_frames: int = 3  # Frames at edge before considering person exited
     person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
+
+    # Pose/Gesture Settings
+    # Backend: "mediapipe" or "movenet" (tflite or tfhub)
+    pose_backend: str = "mediapipe"
+    pose_score_threshold: float = 0.3
+    movenet_model_path: str = "edge/models/movenet_singlepose_lightning.tflite"
+    movenet_input_size: int = 256
+    movenet_num_threads: int = 2
+    movenet_use_tfhub: bool = False
+    movenet_tfhub_url: str = "https://tfhub.dev/google/movenet/singlepose/thunder/1"
+
+    # MediaPipe Pose parameters
+    mediapipe_model_complexity: int = 1
+    mediapipe_min_detection_confidence: float = 0.5
+    mediapipe_min_tracking_confidence: float = 0.5
+
+    # Gesture detection parameters (used by tap gesture)
+    gesture_chest_tolerance_px: int = 40
+    gesture_proximity_px: int = 60
+    gesture_dwell_min_s: float = 0.25
+    gesture_dwell_max_s: float = 1.0
+    gesture_relaxed_in_roi: bool = True
+    gesture_bbox_roi_hdist_px: int = 80
+    movenet_min_interval_s: float = 0.12
+    pose_full_frame: bool = False
+
+    # Overlay/Visualization
+    pose_overlay_enabled: bool = True
+    pose_overlay_min_confidence: float = 0.3
+    pose_overlay_infer_if_missing: bool = True
+    pose_overlay_draw_angles: bool = True
 
     # Event Batching Settings
     detection_batch_interval: float = 1.0  # seconds - batch regular detections

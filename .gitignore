@@ -6,3 +6,4 @@
 /edge/models/*
 /TTC/*
 *.jpg
+.venv/*

@@ -12,6 +12,7 @@ from camera_handler import CameraHandler
 from detection_engine import DetectionEngine
 from event_processor import EventProcessor
 from server_client import ServerClient
+from rules import ValidatorAndGateRules
 
 
 class EdgeDevice:
@@ -22,6 +23,7 @@ class EdgeDevice:
         self.detection_engine = DetectionEngine()
         self.event_processor = EventProcessor()
         self.server_client = ServerClient()
+        self.rules = ValidatorAndGateRules(settings)
         self.is_running = False
         self.frame_count = 0
         self._last_debug_log = 0.0
@@ -44,6 +46,12 @@ class EdgeDevice:
             logger.error("Failed to initialize detection engine")
             return False
         
+        # Preload pose backend to avoid first-frame stall
+        try:
+            self.rules.preload()
+        except Exception:
+            pass
+
         # Initialize server client
         if not await self.server_client.initialize():
             logger.error("Failed to initialize server client")
@@ -119,6 +127,16 @@ class EdgeDevice:
                 detections = detection_results.get(camera_id)
                 if detections is not None:
                     self._last_detections[camera_id] = detections
+
+                # Update pose/gesture state for each tracked person (full-frame ROI)
+                try:
+                    if detections:
+                        h, w = frame.shape[:2]
+                        roi = (0, 0, max(0, w - 1), max(0, h - 1))
+                        for det in detections:
+                            self.rules.update_track(frame, det, roi)
+                except Exception:
+                    pass
 
                 # Log tracking info
                 if detections:
@@ -227,9 +245,13 @@ class EdgeDevice:
             try:
                 if detections:
                     annotated = self.detection_engine.draw_detections(frame, detections)
+                    # Draw pose overlays (joints/bones/keypoints)
+                    annotated = self.rules.draw_pose_overlays(annotated, detections)
                     cv2.imshow(f"Camera {camera_id}", annotated)
                 else:
-                    cv2.imshow(f"Camera {camera_id}", frame)
+                    # Even without detections, optionally draw any cached poses
+                    annotated = self.rules.draw_pose_overlays(frame, [])
+                    cv2.imshow(f"Camera {camera_id}", annotated)
             except Exception:
                 pass
     

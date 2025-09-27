@@ -8,6 +8,8 @@ torch
 torchvision
 numpy
 Pillow
+mediapipe
+pydantic-settings
 
 # Camera and Video Processing
 # Note: gstreamer-python and pygobject may need system dependencies
