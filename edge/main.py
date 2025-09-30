@@ -198,11 +198,11 @@ class EdgeDevice:
                     for detection in detections:
                         person_id = detection.get('person_id')
                         if person_id in crossed_person_ids:
-                            # Find the person in the tracker to check crossing direction
-                            if hasattr(self, 'detection_engine') and hasattr(self.detection_engine, 'person_tracker'):
-                                tracker = self.detection_engine.person_tracker
-                                if person_id in tracker.tracked_persons:
-                                    person = tracker.tracked_persons[person_id]
+                            # Find the person in the gate monitor to check crossing direction
+                            if hasattr(self, 'detection_engine') and hasattr(self.detection_engine, 'gate_monitor'):
+                                monitor = self.detection_engine.gate_monitor
+                                if person_id in monitor.tracked_persons:
+                                    person = monitor.tracked_persons[person_id]
                                     
                                     # Only process down->up crossings (entering)
                                     if person.crossing_direction == "up":
@@ -404,6 +404,8 @@ async def main():
             "FARE EVASION",
             "Gate Crossing",
             "crossed the gate",
+            "crossed gate line",
+            "detected AFTER gate line",
             "Wrist detected in Validator ROI",
             "No tap detected",
             "Tap already used",

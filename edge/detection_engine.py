@@ -101,7 +101,7 @@ class PoseEstimator:
 class TrackedPerson:
     """Represents a tracked person with ID and crossing state."""
 
-    def __init__(self, person_id: int, bbox: List[int], frame_height: int, frame_width: int):
+    def __init__(self, person_id: int, bbox: List[int], frame_height: int, frame_width: int, gate_line_y: Optional[int] = None):
         self.person_id = person_id
         self.bbox = bbox
         self.last_seen_frame = 0
@@ -109,17 +109,24 @@ class TrackedPerson:
         self.crossing_direction = None  # "up" or "down"
         self.exited_frame = False  # Track if person has left the frame
         self.frames_at_edge = 0  # Track how long person has been at frame edge
-        # Track position relative to gate line (use TOP edge y1 for horizontal gate line)
+        # Store gate line position in pixels (from ROI config)
+        self.gate_line_y_pixels = gate_line_y
+        # Track position (TOP edge y1)
         _, y1, _, _ = bbox
-        self.relative_position = y1 / frame_height  # 0-1 normalized (top edge)
+        self.previous_y1 = y1
+        self.current_y1 = y1
 
     def update_position(self, bbox: List[int], frame_height: int, frame_width: int):
         """Update person's position and check for gate crossing."""
         self.bbox = bbox
         x1, y1, x2, y2 = bbox
-        # Use TOP edge (y1) for crossing detection
-        old_relative = self.relative_position
-        self.relative_position = y1 / frame_height
+        
+        # Track if this is the first update (to handle late detections)
+        is_first_update = (self.previous_y1 == self.current_y1)
+        
+        # Update position tracking
+        self.previous_y1 = self.current_y1
+        self.current_y1 = y1
 
         # Check if person has left the frame boundaries
         margin = settings.person_exit_margin
@@ -167,17 +174,41 @@ class TrackedPerson:
 
         # Check for crossing (vertical movement across horizontal gate line)
         # Only detect down->up crossings (top edge crosses upward)
-        gate_line = settings.gate_crossing_line_y
-        hysteresis = settings.gate_crossing_hysteresis / frame_height
+        if self.gate_line_y_pixels is None:
+            # Fallback to normalized position if gate line not provided
+            gate_line_pixels = frame_height * settings.gate_crossing_line_y
+        else:
+            # Use actual gate line from ROI config (in pixels)
+            gate_line_pixels = self.gate_line_y_pixels
+        
+        hysteresis_pixels = settings.gate_crossing_hysteresis
 
-        # Person moving from down to up (top edge crosses gate line upward)
-        # old_relative is higher value (lower on screen), new is lower value (higher on screen)
-        if old_relative > gate_line + hysteresis and self.relative_position < gate_line - hysteresis:
-            if not self.crossed_gate:
+        # Person moving from down to up (bottom of frame to top)
+        # previous_y1 is higher value (lower on screen), current_y1 is lower value (higher on screen)
+        crossed_upward = (self.previous_y1 > gate_line_pixels + hysteresis_pixels and 
+                         self.current_y1 < gate_line_pixels - hysteresis_pixels)
+        
+        # SPECIAL CASE: Person detected when already past gate line (late detection)
+        # If first update and already above gate line, trigger immediate crossing
+        if is_first_update and not self.crossed_gate:
+            if self.current_y1 < gate_line_pixels - hysteresis_pixels:
                 self.crossed_gate = True
                 self.crossing_direction = "up"
-                logger.info(f"Person {self.person_id} TOP EDGE crossed gate from down to up (entering - needs validation)")
+                logger.warning(
+                    f"Person {self.person_id} detected AFTER gate line (y={gate_line_pixels}px) "
+                    f"at position {self.current_y1}px - triggering immediate crossing validation"
+                )
                 return True
+        
+        # Normal crossing detection (transition based)
+        if crossed_upward and not self.crossed_gate:
+            self.crossed_gate = True
+            self.crossing_direction = "up"
+            logger.info(
+                f"Person {self.person_id} TOP EDGE crossed gate line (y={gate_line_pixels}px) "
+                f"from down to up: {self.previous_y1}px → {self.current_y1}px (entering - needs validation)"
+            )
+            return True
         
         # Ignore up->down crossings (person exiting)
         # We don't track or validate exits
@@ -186,127 +217,61 @@ class TrackedPerson:
 
 
 
-class PersonTracker:
-    """Simple person tracker using bounding box overlap."""
+class GateCrossingMonitor:
+    """
+    Monitors gate crossings and frame exits for tracked persons.
+    Does NOT assign IDs - uses IDs from OC-SORT tracker.
+    """
 
-    def __init__(self):
+    def __init__(self, gate_line: Optional[List[int]] = None):
         self.tracked_persons: Dict[int, TrackedPerson] = {}
-        self.next_person_id = 1
-        self.frame_count = 0
+        # Extract gate line y-coordinate from ROI config (horizontal line: y1 == y2)
+        self.gate_line_y = None
+        if gate_line and len(gate_line) >= 4:
+            # gate_line format: [x1, y1, x2, y2]
+            y1, y2 = gate_line[1], gate_line[3]
+            if y1 == y2:  # Horizontal line
+                self.gate_line_y = y1
+                logger.info(f"GateCrossingMonitor initialized with gate line at y={self.gate_line_y}px")
 
     def update(self, detections: List[Dict[str, Any]], frame_height: int, frame_width: int) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
-        Update tracking with new detections.
-        Returns: (enriched_detections, crossed_person_ids)
+        Update crossing state for detections (IDs already assigned by OC-SORT).
+        Returns: (detections, crossed_person_ids)
         """
-        self.frame_count += 1
         crossed_person_ids = []
 
-        # Do not touch last_seen_frame here. We only update it when a
-        # detection is actually matched to a tracked person. This allows
-        # tracks to age-out correctly when not seen.
-
-        # Match detections to existing tracks (excluding exited persons)
-        matched_track_ids = set()
-        enriched_detections = []
-
         for detection in detections:
+            person_id = detection.get("person_id")
+            if person_id is None:
+                continue
+                
             bbox = detection["bbox"]
-            best_match_id = None
-            best_iou = 0
+            
+            # Get or create tracked person (using ID from OC-SORT)
+            if person_id not in self.tracked_persons:
+                # New person from OC-SORT - create tracking state with gate line position
+                self.tracked_persons[person_id] = TrackedPerson(
+                    person_id, bbox, frame_height, frame_width, gate_line_y=self.gate_line_y
+                )
+            
+            # Update position and check for crossing
+            person = self.tracked_persons[person_id]
+            crossed = person.update_position(bbox, frame_height, frame_width)
+            
+            if crossed:
+                crossed_person_ids.append(person_id)
 
-            # Find best matching existing track
-            for person_id, person in self.tracked_persons.items():
-                if person_id in matched_track_ids:
-                    continue
-
-                # Skip persons who have exited the frame - they should never be matched again
-                if person.exited_frame:
-                    continue
-
-                iou = self._calculate_iou(bbox, person.bbox)
-                frames_since_seen = self.frame_count - person.last_seen_frame
-
-                # Use lower threshold for recently seen tracks (coasting)
-                threshold = settings.person_tracking_iou_threshold
-                if frames_since_seen <= 3:  # Recently seen
-                    threshold = max(0.05, threshold * 0.5)  # Much more permissive
-
-                if iou > threshold and iou > best_iou:
-                    best_iou = iou
-                    best_match_id = person_id
-
-            if best_match_id is not None:
-                # Update existing track
-                person = self.tracked_persons[best_match_id]
-                crossed = person.update_position(bbox, frame_height, frame_width)
-                # Mark as seen on this frame
-                person.last_seen_frame = self.frame_count
-                if crossed:
-                    crossed_person_ids.append(best_match_id)
-                matched_track_ids.add(best_match_id)
-            else:
-                # Create new track
-                new_person = TrackedPerson(self.next_person_id, bbox, frame_height, frame_width)
-                self.tracked_persons[self.next_person_id] = new_person
-                matched_track_ids.add(self.next_person_id)
-                self.next_person_id += 1
-
-            # Enrich detection with tracking info
-            enriched_detection = dict(detection)
-            enriched_detection["person_id"] = best_match_id if best_match_id else self.next_person_id - 1
-
-            # Only include non-exited persons in the results
-            if best_match_id is not None:
-                person = self.tracked_persons[best_match_id]
-                if not person.exited_frame:
-                    enriched_detections.append(enriched_detection)
-            else:
-                # New person - include them
-                enriched_detections.append(enriched_detection)
-
-        # Clean up old tracks and exited persons
+        # Clean up exited persons
         to_remove = []
         for person_id, person in self.tracked_persons.items():
-            frames_since_seen = self.frame_count - person.last_seen_frame
-
-            # Remove persons who have exited the frame
             if person.exited_frame:
-                logger.debug(f"Removing exited person {person_id} from tracking")
-                to_remove.append(person_id)
-                continue
-
-            # Remove persons who haven't been seen for too long
-            if frames_since_seen > settings.person_tracking_max_age:
                 to_remove.append(person_id)
 
         for person_id in to_remove:
             del self.tracked_persons[person_id]
 
-        return enriched_detections, crossed_person_ids
-
-    def _calculate_iou(self, bbox1: List[int], bbox2: List[int]) -> float:
-        """Calculate intersection over union of two bounding boxes."""
-        x1_1, y1_1, x2_1, y2_1 = bbox1
-        x1_2, y1_2, x2_2, y2_2 = bbox2
-
-        # Intersection
-        x1_i = max(x1_1, x1_2)
-        y1_i = max(y1_1, y1_2)
-        x2_i = min(x2_1, x2_2)
-        y2_i = min(y2_1, y2_2)
-
-        if x2_i <= x1_i or y2_i <= y1_i:
-            return 0.0
-
-        intersection_area = (x2_i - x1_i) * (y2_i - y1_i)
-
-        # Union
-        bbox1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
-        bbox2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union_area = bbox1_area + bbox2_area - intersection_area
-
-        return intersection_area / union_area if union_area > 0 else 0.0
+        return detections, crossed_person_ids
 
 
 class DetectionEngine:
@@ -317,15 +282,16 @@ class DetectionEngine:
         self.is_initialized = False
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
-        # Legacy simple tracker retained for gate-crossing logic if needed
-        self.person_tracker = PersonTracker() if settings.enable_gate_crossing else None
-        # OC-SORT style trackers per camera for stable IDs
-        self.ocsort_trackers: Dict[int, OCSortTracker] = {}
-
-        # Load ROI configuration
+        # Load ROI configuration first (needed for gate monitor)
         self.validator_roi = None
         self.gate_line = None
         self._load_roi_config()
+        
+        # Gate crossing monitor - tracks crossing state using IDs from OC-SORT
+        self.gate_monitor = GateCrossingMonitor(gate_line=self.gate_line) if settings.enable_gate_crossing else None
+        
+        # OC-SORT trackers per camera for stable ID assignment
+        self.ocsort_trackers: Dict[int, OCSortTracker] = {}
 
         # Initialize pose estimator
         try:
@@ -529,18 +495,17 @@ class DetectionEngine:
                     logger.info(f"👤 New person detected - assigned ID {next_id}")
                     next_id += 1
 
-            # Maintain gate-crossing logic using legacy tracker state if enabled
+            # Monitor gate crossings and frame exits (using IDs from OC-SORT)
             crossed_person_ids = []
-            if self.person_tracker:
+            if self.gate_monitor:
                 frame_height, frame_width = frame.shape[:2]
-                tracked_detections, crossed_person_ids = self.person_tracker.update(detections, frame_height, frame_width)
-                results[camera_id] = tracked_detections
+                detections, crossed_person_ids = self.gate_monitor.update(detections, frame_height, frame_width)
                 all_crossed_person_ids.extend(crossed_person_ids)
                 
                 # CRITICAL: Clean up OC-SORT tracks for persons who have exited the frame
                 # This ensures track IDs are only forgotten when person leaves, not based on time
                 exited_person_ids = []
-                for person_id, person in self.person_tracker.tracked_persons.items():
+                for person_id, person in self.gate_monitor.tracked_persons.items():
                     if person.exited_frame:
                         exited_person_ids.append(person_id)
                 
@@ -556,8 +521,8 @@ class DetectionEngine:
                     # Remove tracks in reverse order to avoid index issues
                     for idx in sorted(to_remove_indices, reverse=True):
                         del tracker.trackers[idx]
-            else:
-                results[camera_id] = detections
+            
+            results[camera_id] = detections
 
         return results, all_crossed_person_ids
     
