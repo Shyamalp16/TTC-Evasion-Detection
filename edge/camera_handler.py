@@ -34,25 +34,46 @@ class CameraHandler:
                     else:
                         cap = cv2.VideoCapture(device_index); tried.append("DEFAULT")
                 else:
-                    cap = cv2.VideoCapture(url); tried.append("SOURCE")
+                    # Prefer FFmpeg backend with TCP for RTSP streams when available
+                    # Try FFmpeg with explicit options first
+                    ffmpeg_backend_flag = getattr(cv2, "CAP_FFMPEG", None)
+                    rtsp_url = url  # keep URL unchanged to avoid server 404 with unknown params
+                    # Provide options via OPENCV_FFMPEG_CAPTURE_OPTIONS environment variable
+                    try:
+                        if settings.ffmpeg_capture_options:
+                            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = settings.ffmpeg_capture_options
+                    except Exception:
+                        pass
+                    if ffmpeg_backend_flag is not None:
+                        cap = cv2.VideoCapture(rtsp_url, ffmpeg_backend_flag); tried.append("FFMPEG")
+                    if not cap or not cap.isOpened():
+                        # Fallback to default backend
+                        cap.release() if cap else None
+                        cap = cv2.VideoCapture(rtsp_url); tried.append("SOURCE")
                 
-                # Dev-friendly tuning (some backends ignore these)
+                # Configure for low-latency streaming
                 if cap:
+                    # Set buffer to minimum to reduce lag
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    cap.set(cv2.CAP_PROP_FPS, 120)
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                    # Don't set unrealistic FPS - let stream determine this
+                    # cap.set(cv2.CAP_PROP_FPS, 30)  # Commented out - let camera decide
+                    # Only set resolution if needed
+                    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                    # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 
                 # Fallback to default webcam 0 if open failed and this looks like a stream/path
                 if (not cap or not cap.isOpened()) and isinstance(url, str) and not url.isdigit():
-                    logger.warning(f"Primary source failed for camera {i}: {url}. Fallback to webcam 0.")
-                    if os.name == "nt":
-                        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW); tried.append("FALLBACK_DSHOW_0")
-                        if not cap or not cap.isOpened():
-                            cap.release() if cap else None
-                            cap = cv2.VideoCapture(0, cv2.CAP_MSMF); tried.append("FALLBACK_MSMF_0")
+                    if settings.disable_webcam_fallback:
+                        logger.error(f"Primary source failed for camera {i}: {url}. Webcam fallback disabled.")
                     else:
-                        cap = cv2.VideoCapture(0); tried.append("FALLBACK_DEFAULT_0")
+                        logger.warning(f"Primary source failed for camera {i}: {url}. Fallback to webcam 0.")
+                        if os.name == "nt":
+                            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW); tried.append("FALLBACK_DSHOW_0")
+                            if not cap or not cap.isOpened():
+                                cap.release() if cap else None
+                                cap = cv2.VideoCapture(0, cv2.CAP_MSMF); tried.append("FALLBACK_MSMF_0")
+                        else:
+                            cap = cv2.VideoCapture(0); tried.append("FALLBACK_DEFAULT_0")
                 
                 if not cap or not cap.isOpened():
                     logger.error(f"Failed to open camera {i} using attempts: {tried}. Source: {url}")
@@ -73,7 +94,13 @@ class CameraHandler:
             return None
             
         cap = self.cameras[camera_index]
-        ret, frame = cap.read()
+        
+        # Flush buffer: grab multiple times to get the latest frame for RTSP streams
+        # This prevents lag by discarding old buffered frames
+        for _ in range(5):
+            cap.grab()
+        
+        ret, frame = cap.retrieve()
         
         if not ret or frame is None:
             logger.warning(f"Failed to read frame from camera {camera_index}")

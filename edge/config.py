@@ -16,13 +16,18 @@ class Settings(BaseSettings):
     # Camera Configuration
     #rtsp:// URLs.
     camera_urls: List[str] = [
-        "0",  # Laptop webcam index 0
+        # "0",  # Laptop webcam index 0
         # "1",  # Uncomment if you have a second webcam
-        # "rtsp://admin:password@192.168.1.100:554/stream1",
+        "rtsp://admin:admin@10.0.0.231:8554/live",
         # "rtsp://admin:password@192.168.1.101:554/stream1"
     ]
     primary_camera_id: int = 0  # Primary camera for snapshots and events
     camera_timeout: int = 10
+    disable_webcam_fallback: bool = True  # When True, do not fallback to webcam if RTSP fails
+    rtsp_transport: str = "tcp"  # ffmpeg: tcp (more reliable) or udp (lower latency)
+    # OpenCV FFmpeg capture options (key;value pairs separated by |)
+    # Updated format for proper low-latency RTSP streaming
+    ffmpeg_capture_options: str = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
     
     # Detection Settings
     detection_confidence: float = 0.5
