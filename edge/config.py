@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where horizontal gate crossing line is drawn
     gate_crossing_direction: str = "up"  # "up" or "down" - direction of crossing (person moving from down to up validates)
     gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
-    person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
-    person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
+    person_tracking_max_age: int = 300  # Keep tracks alive until they exit frame (not time-based) - fallback only
+    person_tracking_iou_threshold: float = 0.05  # IOU threshold for matching detections to tracks (very permissive)
 
     # Server Configuration
     server_url: str = "http://127.0.0.1:8000"  # Dev: local server
@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     detection_interval: float = 0.15  # seconds
     preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)
     
+    # Frame Exit Detection - determines when to forget track IDs
     person_exit_edge_margin: int = 15  # Pixels from frame edge to consider as potentially exiting
-    person_exit_edge_frames: int = 3  # Frames at edge before considering person exited
+    person_exit_edge_frames: int = 5  # Frames at edge before considering person exited (increased from 3 for stability)
     person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
 
     # Pose/Gesture Settings
@@ -86,6 +87,14 @@ class Settings(BaseSettings):
     tap_allow_reuse: bool = False                 # Allow same tap for multiple crossings (should be False)
     tap_max_attempts: int = 5                     # Max tap attempts before flagging suspicious
     tap_cooldown_after_use_seconds: float = 2.0   # Cooldown before detecting new tap after use
+    
+    # Tap Detection Sensitivity Settings
+    tap_require_arm_extension: bool = False       # Require arm to be extended forward (strict)
+    tap_require_torso_level: bool = False         # Require wrist at torso level (strict)
+    tap_min_stable_frames: int = 2                # Minimum frames for stability (was 3)
+    tap_min_stable_duration: float = 0.15         # Minimum stable duration in seconds (was 0.3)
+    tap_variance_threshold: float = 40.0          # Max position variance in pixels (was 15.0)
+    tap_enable_debug_logging: bool = True         # Log why tap detection fails
 
     # Overlay/Visualization
     pose_overlay_enabled: bool = True

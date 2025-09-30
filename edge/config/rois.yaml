@@ -3,12 +3,13 @@
 
 # validator_roi: Bounding box where validator/tap machine is located
 # Format: [x1, y1, x2, y2] where (x1,y1) is top-left, (x2,y2) is bottom-right
-# Centered square ROI for typical 640x480 camera resolution
+# Positioned well BEFORE gate line so person taps before crossing
+# For down->up entry (bottom to top), ROI should be below gate line with good spacing
 validator_roi:
   - 500   # x1 - left coordinate (centered horizontally)
-  - 365   # y1 - top coordinate (centered vertically)
-  - 800   # x2 - right coordinate (250px wide square)
-  - 635   # y2 - bottom coordinate (250px tall square)
+  - 450   # y1 - top coordinate (90px buffer from gate line at y=360)
+  - 800   # x2 - right coordinate (300px wide)
+  - 700   # y2 - bottom coordinate (250px tall ROI below gate line)
 
 # gate_line: Line coordinates just past barrier for gate crossing detection
 # Format: [x1, y1, x2, y2] where (x1,y1) is start point, (x2,y2) is end point

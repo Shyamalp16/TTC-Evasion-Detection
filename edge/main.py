@@ -127,61 +127,67 @@ class EdgeDevice:
 
             # Update track state and run pose estimation for all detections
             for camera_id, detections in detection_results.items():
+                frame = frame_lookup.get(camera_id)
+                if frame is None:
+                    continue
+                    
                 for detection in detections:
                     person_id = detection.get('person_id')
-                    if person_id is not None:
-                        # Update track state with ROI information
-                        validator_roi = self.detection_engine.validator_roi
-                        if validator_roi:
-                            self.rules.update_track(frame, detection, tuple(validator_roi))
+                    if person_id is None:
+                        continue
+                    
+                    bbox = detection.get("bbox", [])
+                    if len(bbox) < 4:
+                        continue
+                    
+                    # Run pose estimation for EVERY detection (no cooldown for reliability)
+                    try:
+                        # Crop the person from the frame
+                        x1, y1, x2, y2 = bbox
+                        
+                        # Ensure valid crop region
+                        if x2 <= x1 or y2 <= y1:
+                            logger.debug(f"Person {person_id}: Invalid bbox {bbox}")
+                            continue
+                        
+                        cropped_person = frame[y1:y2, x1:x2]
 
-                        # Run pose estimation once per track (with cooldown)
-                        track_status = self.rules.get_status(person_id)
-                        current_time = time.time()
-                        last_pose_time = track_status.get("pose_timestamp", 0)
-                        pose_cooldown = 0.5  # seconds between pose updates
+                        if cropped_person.size == 0:
+                            logger.debug(f"Person {person_id}: Empty crop")
+                            continue
 
-                        # Only run pose estimation if we don't have recent pose data
-                        if current_time - last_pose_time > pose_cooldown:
-                            bbox = detection.get("bbox", [])
-                            if len(bbox) >= 4:
-                                try:
-                                    # Crop the person from the frame
-                                    x1, y1, x2, y2 = bbox
-                                    cropped_person = frame[y1:y2, x1:x2]
+                        # Run pose estimation
+                        if self.detection_engine.pose_estimator is None:
+                            logger.warning("Pose estimator not initialized!")
+                            continue
 
-                                    if cropped_person.size > 0:
-                                        # Run pose estimation
-                                        if self.detection_engine.pose_estimator is None:
-                                            continue
+                        pose_result = self.detection_engine.pose_estimator.infer_pose(cropped_person)
+                        
+                        if pose_result and 'keypoints' in pose_result:
+                            # Adjust keypoints back to full frame coordinates
+                            adjusted_keypoints = {}
+                            for name, kp in pose_result['keypoints'].items():
+                                adjusted_keypoints[name] = {
+                                    'x': kp['x'] + x1,
+                                    'y': kp['y'] + y1,
+                                    'z': kp['z'],
+                                    'visibility': kp['visibility']
+                                }
 
-                                        pose_result = self.detection_engine.pose_estimator.infer_pose(cropped_person)
-                                        if pose_result:
-                                            # Adjust keypoints back to full frame coordinates
-                                            adjusted_keypoints = {}
-                                            for name, kp in pose_result['keypoints'].items():
-                                                adjusted_keypoints[name] = {
-                                                    'x': kp['x'] + x1,
-                                                    'y': kp['y'] + y1,
-                                                    'z': kp['z'],
-                                                    'visibility': kp['visibility']
-                                                }
+                            # CRITICAL FIX: Attach pose directly to detection
+                            detection["pose_keypoints"] = adjusted_keypoints
 
-                                            # Store pose in track state
-                                            track_status["pose_keypoints"] = adjusted_keypoints
-                                            track_status["pose_timestamp"] = current_time
-
-                                except Exception as e:
-                                    pass  # Silently handle pose estimation failures
-
-                        # Always use cached pose data for visualization if available
-                        cached_pose = track_status.get("pose_keypoints")
-                        if cached_pose:
-                            detection["pose_keypoints"] = cached_pose
+                    except Exception as e:
+                        logger.debug(f"Person {person_id}: Pose estimation error - {type(e).__name__}")
+                    
+                    # Now update track with ROI information (pose keypoints are already attached)
+                    validator_roi = self.detection_engine.validator_roi
+                    if validator_roi:
+                        self.rules.update_track(frame, detection, tuple(validator_roi))
 
             # Handle gate crossings and create appropriate events
             if crossed_person_ids:
-                logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
+                logger.info(f"🚪 Gate Crossing: {len(crossed_person_ids)} person(s) crossed the gate line")
 
                 # Validate each crossing using tap detection
                 evasion_crossings = []
@@ -212,8 +218,9 @@ class EdgeDevice:
                                         if classification == "pass" and tap_confirmed:
                                             # Valid pass - person tapped
                                             logger.info(
-                                                f"✅ Person {person_id} VALID PASS "
-                                                f"(tap age: {tap_age:.2f}s, crossing #{crossing_count})"
+                                                f"🎫 Person {person_id} VALID PASS | "
+                                                f"Tap confirmed {tap_age:.2f}s ago | "
+                                                f"Crossing #{crossing_count} | Access granted"
                                             )
                                             normal_crossings.append(detection)
                                         else:
@@ -377,16 +384,42 @@ async def main():
     """Main application entry point."""
     # Configure logging
     logger.remove()  # remove default console sink
-    # File sink
+    
+    # File sink - captures everything
     logger.add(
         settings.log_file,
         rotation="1 day",
         retention="7 days",
         level=settings.file_log_level
     )
-    # Optional console sink with higher level to reduce overhead
-    if settings.enable_console_logs:
-        logger.add(lambda msg: print(msg, end=""), level=settings.console_log_level)
+    
+    # Console sink - ONLY tap detection, gate crossing, and tracking messages
+    def tap_detection_filter(record):
+        """Filter to only show tap detection, gate crossing, and track lifecycle messages."""
+        message = record["message"]
+        # Allow tap detection, gate crossing, and tracking lifecycle messages
+        important_keywords = [
+            "Tap DETECTED",
+            "VALID PASS",
+            "FARE EVASION",
+            "Gate Crossing",
+            "crossed the gate",
+            "Wrist detected in Validator ROI",
+            "No tap detected",
+            "Tap already used",
+            "Tap EXPIRED",
+            "New person detected",
+            "exited frame"
+        ]
+        return any(keyword in message for keyword in important_keywords)
+    
+    # Always enable console for tap detection (override settings)
+    logger.add(
+        lambda msg: print(msg, end=""),
+        level="INFO",
+        filter=tap_detection_filter,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    )
     
     logger.info("Starting SnitchSystem Edge Device")
     

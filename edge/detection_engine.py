@@ -18,13 +18,18 @@ class PoseEstimator:
     """MediaPipe-based pose estimation for person tracking."""
 
     def __init__(self):
+        # Use static image mode for better per-frame detection
         self.pose = mp.solutions.pose.Pose(
+            static_image_mode=True,  # Better for individual detections
             model_complexity=settings.mediapipe_model_complexity,
             min_detection_confidence=settings.mediapipe_min_detection_confidence,
-            min_tracking_confidence=settings.mediapipe_min_tracking_confidence
+            min_tracking_confidence=settings.mediapipe_min_tracking_confidence,
+            enable_segmentation=False,  # Faster without segmentation
+            smooth_landmarks=False  # Not needed for static images
         )
         self.mp_pose = mp.solutions.pose
         self.mp_drawing = mp.solutions.drawing_utils
+        logger.info("PoseEstimator initialized with static_image_mode=True for robust detection")
 
     def infer_pose(self, image: np.ndarray) -> Optional[Dict[str, Any]]:
         """
@@ -37,6 +42,11 @@ class PoseEstimator:
             Dictionary with pose keypoints or None if no pose detected
         """
         try:
+            # Validate input
+            if image is None or image.size == 0:
+                logger.debug("Pose estimation: Empty or None image")
+                return None
+            
             # Convert to RGB if needed
             if len(image.shape) == 3 and image.shape[2] == 3:
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -481,12 +491,15 @@ class DetectionEngine:
             # Get tracker for this camera
             tracker = self.ocsort_trackers.get(camera_id)
             if tracker is None:
+                # CRITICAL: Keep tracks alive as long as person is in frame
+                # max_age set very high - we'll manually clean up when person exits frame
                 tracker = OCSortTracker(
-                    max_age=max(5, settings.person_tracking_max_age),
-                    min_hits=2,
-                    iou_threshold=max(0.1, settings.person_tracking_iou_threshold),
+                    max_age=300,     # Keep tracks alive for 300 frames (~10 seconds) - only forget if truly lost
+                    min_hits=1,      # Assign ID immediately
+                    iou_threshold=0.05,  # Very permissive matching - prevents ID switches
                 )
                 self.ocsort_trackers[camera_id] = tracker
+                logger.info(f"Initialized OC-SORT tracker for camera {camera_id} with persistent params (max_age=300, min_hits=1, iou=0.05)")
 
             tracked = tracker.update(det_array)
             # Map from bbox to id with a tolerance using IoU to pair back to detection dicts
@@ -502,7 +515,8 @@ class DetectionEngine:
                     if iou_val > best_iou:
                         best_iou = iou_val
                         best_idx = idx
-                if best_idx >= 0 and best_iou >= 0.1:
+                # More permissive matching threshold (was 0.1, now 0.05) for stable ID assignment
+                if best_idx >= 0 and best_iou >= 0.05:
                     detections[best_idx]["person_id"] = int(trk_id)
                     id_assigned[best_idx] = True
 
@@ -512,6 +526,7 @@ class DetectionEngine:
             for idx, assigned in enumerate(id_assigned):
                 if not assigned and idx < len(detections):
                     detections[idx]["person_id"] = int(next_id)
+                    logger.info(f"👤 New person detected - assigned ID {next_id}")
                     next_id += 1
 
             # Maintain gate-crossing logic using legacy tracker state if enabled
@@ -521,6 +536,26 @@ class DetectionEngine:
                 tracked_detections, crossed_person_ids = self.person_tracker.update(detections, frame_height, frame_width)
                 results[camera_id] = tracked_detections
                 all_crossed_person_ids.extend(crossed_person_ids)
+                
+                # CRITICAL: Clean up OC-SORT tracks for persons who have exited the frame
+                # This ensures track IDs are only forgotten when person leaves, not based on time
+                exited_person_ids = []
+                for person_id, person in self.person_tracker.tracked_persons.items():
+                    if person.exited_frame:
+                        exited_person_ids.append(person_id)
+                
+                # Force OC-SORT to forget these tracks by checking against active trackers
+                if exited_person_ids and hasattr(tracker, 'trackers'):
+                    to_remove_indices = []
+                    for idx, trk in enumerate(tracker.trackers):
+                        trk_id = int(trk.id)
+                        if trk_id in exited_person_ids:
+                            to_remove_indices.append(idx)
+                            logger.info(f"🚪 Person {trk_id} exited frame - releasing track ID")
+                    
+                    # Remove tracks in reverse order to avoid index issues
+                    for idx in sorted(to_remove_indices, reverse=True):
+                        del tracker.trackers[idx]
             else:
                 results[camera_id] = detections
 

@@ -34,6 +34,7 @@ class ValidatorAndGateRules:
                 "gesture_history": {},
                 "wrist_history": [],  # Store wrist positions over time for stability detection
                 "last_tap_check": 0.0,  # Timestamp of last tap gesture check
+                "wrist_detection_logged": False,  # Flag to log wrist detection only once
                 
                 # Tap lifecycle tracking (security enhancement)
                 "tap_timestamp": None,           # When tap was detected
@@ -80,15 +81,17 @@ class ValidatorAndGateRules:
         track = self._get_track(track_id)
         current_time = time.time()
         
+        debug_log = getattr(self.cfg, 'tap_enable_debug_logging', True)
+        
         # SECURITY: Don't re-detect tap if already confirmed and not expired
         if track.get("tap_confirmed") and not track.get("tap_used"):
             tap_expires = track.get("tap_expires_at", 0)
             if current_time < tap_expires:
-                # Tap still valid, don't process new tap
+                # Tap still valid, stop ALL wrist detection checks (waiting for gate crossing)
                 return
             else:
                 # Tap expired, allow new tap detection
-                logger.debug(f"Track {track_id}: Previous tap expired, allowing new detection")
+                logger.info(f"Track {track_id}: Previous tap EXPIRED, allowing new detection")
                 self._reset_tap_state(track)
         
         # SECURITY: Cooldown period after tap usage
@@ -97,7 +100,7 @@ class ValidatorAndGateRules:
             cooldown = getattr(self.cfg, 'tap_cooldown_after_use_seconds', 2.0)
             time_since_usage = current_time - last_usage
             if time_since_usage < cooldown:
-                # Too soon after last tap usage
+                # Too soon after last tap usage (person already crossed)
                 return
 
         # Determine dominant wrist (higher confidence)
@@ -108,7 +111,10 @@ class ValidatorAndGateRules:
             return  # Need both wrists for comparison
 
         # Choose dominant wrist based on visibility confidence
-        if left_wrist['visibility'] > right_wrist['visibility']:
+        left_vis = left_wrist.get('visibility', 0)
+        right_vis = right_wrist.get('visibility', 0)
+        
+        if left_vis > right_vis:
             dominant_wrist = left_wrist
             dominant_name = 'left_wrist'
             elbow_name = 'left_elbow'
@@ -120,60 +126,88 @@ class ValidatorAndGateRules:
             shoulder_name = 'right_shoulder'
 
         wrist_x, wrist_y = dominant_wrist['x'], dominant_wrist['y']
+        wrist_visibility = dominant_wrist.get('visibility', 0)
 
-        # Rule 1: Wrist must be inside validator_roi
-        if not self._point_in_roi((int(wrist_x), int(wrist_y)), validator_roi):
+        # Rule 1: Wrist must be inside validator_roi (MANDATORY)
+        wrist_in_roi = self._point_in_roi((int(wrist_x), int(wrist_y)), validator_roi)
+        if not wrist_in_roi:
+            # Only log occasionally when wrist is outside ROI
             return
 
-        # Get elbow and shoulder positions for forward extension check
+        # Get elbow and shoulder positions for optional extension checks
         elbow = pose_keypoints.get(elbow_name)
         shoulder = pose_keypoints.get(shoulder_name)
+        
+        # Rule 2: Arm extension check (OPTIONAL - configurable)
+        extended_forward = True  # Default to True if check disabled
+        if getattr(self.cfg, 'tap_require_arm_extension', False):
+            if not elbow or not shoulder:
+                if debug_log:
+                    logger.debug(f"Track {track_id}: Missing elbow/shoulder keypoints")
+                return
+            
+            # Check if arm is extended forward
+            if dominant_name == 'right_wrist':
+                extended_forward = wrist_x > elbow['x']
+            else:  # left_wrist
+                extended_forward = wrist_x < elbow['x']
+            
+            if not extended_forward:
+                if debug_log:
+                    logger.debug(f"Track {track_id}: Arm not extended forward")
+                return
 
-        if not elbow or not shoulder:
-            return
+        # Rule 3: Torso level check (OPTIONAL - configurable)
+        if getattr(self.cfg, 'tap_require_torso_level', False):
+            if not elbow or not shoulder:
+                return
+            
+            shoulder_y = shoulder['y']
+            elbow_to_shoulder_dist = abs(elbow['y'] - shoulder_y)
+            estimated_hip_y = shoulder_y + (elbow_to_shoulder_dist * 2.0)  # More lenient
+            
+            # Allow wider vertical range
+            torso_level = (shoulder_y - 50) <= wrist_y <= (estimated_hip_y + 50)
+            
+            if not torso_level:
+                if debug_log:
+                    logger.debug(f"Track {track_id}: Wrist not at torso level")
+                return
 
-        # Rule 2: Wrist horizontally extended forward (ahead of elbow & shoulder)
-        # For right-side dominant wrist, check if wrist_x > elbow_x > shoulder_x (moving right)
-        # For left-side dominant wrist, check if wrist_x < elbow_x < shoulder_x (moving left)
-        if dominant_name == 'right_wrist':
-            extended_forward = wrist_x > elbow['x'] > shoulder['x']
-        else:  # left_wrist
-            extended_forward = wrist_x < elbow['x'] < shoulder['x']
-
-        if not extended_forward:
-            return
-
-        # Rule 3: Wrist vertical position ~ torso/waist level
-        # Check if wrist Y is between shoulder Y and approximate hip level
-        shoulder_y = shoulder['y']
-        # Estimate hip level (roughly 1.5x shoulder-to-elbow distance below shoulder)
-        elbow_to_shoulder_dist = abs(elbow['y'] - shoulder_y)
-        estimated_hip_y = shoulder_y + (elbow_to_shoulder_dist * 1.5)
-
-        # Wrist should be between shoulder level and hip level (with some tolerance)
-        torso_level = shoulder_y <= wrist_y <= estimated_hip_y
-
-        if not torso_level:
-            return
-
-        # Rule 4: Wrist remains stable for 0.3-0.5s
+        # Rule 4: Wrist stability check (RELAXED for easier detection)
         # Add current wrist position to history
-        wrist_position = {'x': wrist_x, 'y': wrist_y, 'timestamp': current_time}
+        wrist_position = {
+            'x': wrist_x, 
+            'y': wrist_y, 
+            'timestamp': current_time,
+            'visibility': wrist_visibility
+        }
         track['wrist_history'].append(wrist_position)
 
         # Keep only last 1 second of wrist history
         track['wrist_history'] = [pos for pos in track['wrist_history']
                                  if current_time - pos['timestamp'] < 1.0]
 
-        # Need at least 0.3 seconds of history for stability check
-        if len(track['wrist_history']) < 3:  # At least 3 frames
+        # Get configurable parameters
+        min_frames = getattr(self.cfg, 'tap_min_stable_frames', 2)
+        min_duration = getattr(self.cfg, 'tap_min_stable_duration', 0.15)
+        variance_threshold = getattr(self.cfg, 'tap_variance_threshold', 40.0)
+        
+        # Need minimum number of frames
+        if len(track['wrist_history']) < min_frames:
+            # Only log once when first wrist detected in ROI (reduce noise)
+            if len(track['wrist_history']) == 1 and debug_log and not track.get("wrist_detection_logged"):
+                logger.info(
+                    f"Track {track_id}: Wrist detected in Validator ROI - collecting frames ({len(track['wrist_history'])}/{min_frames})"
+                )
+                track["wrist_detection_logged"] = True
             return
 
-        # Calculate position variance over the last 0.3-0.5 seconds
+        # Calculate position variance over recent history
         recent_positions = [pos for pos in track['wrist_history']
                            if current_time - pos['timestamp'] <= 0.5]
 
-        if len(recent_positions) < 3:
+        if len(recent_positions) < min_frames:
             return
 
         # Calculate variance in wrist position
@@ -184,14 +218,11 @@ class ValidatorAndGateRules:
         y_variance = max(y_positions) - min(y_positions)
         total_variance = (x_variance ** 2 + y_variance ** 2) ** 0.5
 
-        # Stability threshold (pixels)
-        stability_threshold = 15.0  # Adjust as needed
+        wrist_stable = total_variance < variance_threshold
 
-        wrist_stable = total_variance < stability_threshold
-
-        # Check if stable for at least 0.3 seconds
+        # Check if stable for minimum duration
         stability_duration = current_time - recent_positions[0]['timestamp']
-        stable_duration_met = stability_duration >= 0.3
+        stable_duration_met = stability_duration >= min_duration
 
         # If all conditions met, confirm tap
         if wrist_stable and stable_duration_met:
@@ -205,12 +236,9 @@ class ValidatorAndGateRules:
             track["tap_attempts"] += 1  # Increment attempt counter
             
             logger.info(
-                f"✓ Tap DETECTED for track {track_id} "
-                f"(expires in {TAP_VALIDITY_WINDOW}s, attempt #{track['tap_attempts']})"
-            )
-            logger.debug(
-                f"Tap details: wrist stable for {stability_duration:.2f}s, "
-                f"variance: {total_variance:.1f}px"
+                f"✅ Tap DETECTED for track {track_id} | "
+                f"Variance: {total_variance:.1f}px | Duration: {stability_duration:.2f}s | "
+                f"Valid for {TAP_VALIDITY_WINDOW}s | ⏳ Waiting for gate crossing..."
             )
 
     def _point_in_roi(self, point: Tuple[int, int], roi: Tuple[int, int, int, int]) -> bool:
@@ -328,8 +356,8 @@ class ValidatorAndGateRules:
         fraud_flags = self._check_fraud_indicators(track_id, track)
         
         logger.info(
-            f"✅ Track {track_id} VALID PASS: Tap confirmed and consumed "
-            f"(tap age: {tap_age:.2f}s, crossing #{track['crossings_count']})"
+            f"✅✅ Track {track_id} VALID PASS CONFIRMED ✅✅ | "
+            f"Tap age: {tap_age:.2f}s | Crossing #{track['crossings_count']} | Tap consumed"
         )
         
         # Optional: Reset tap state after use (belt-and-suspenders approach)
