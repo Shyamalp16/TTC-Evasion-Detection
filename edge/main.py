@@ -124,19 +124,6 @@ class EdgeDevice:
                     self._last_detections[camera_id] = detections
 
 
-                # Log tracking info
-                if detections:
-                    now = time.time()
-                    if now - self._last_debug_log > 0.5:
-                        logger.debug(
-                            f"Camera {camera_id}: {len(detections)} tracked persons; "
-                            + ", ".join(
-                                f"ID:{det.get('person_id', '?')} {det.get('distance_m', -1.0):.1f}m"
-                                for det in detections[:3]
-                                if det.get('distance_m', -1.0) >= 0.0
-                            )
-                        )
-                        self._last_debug_log = now
 
             # Update track state and run pose estimation for all detections
             for camera_id, detections in detection_results.items():
@@ -196,11 +183,11 @@ class EdgeDevice:
             if crossed_person_ids:
                 logger.info(f"Gate crossings detected: {len(crossed_person_ids)} persons crossed")
 
-                # Separate crossings by direction
+                # Validate each crossing using tap detection
                 evasion_crossings = []
                 normal_crossings = []
 
-                # Check each crossed person to see their crossing direction
+                # Check each crossed person and validate with tap gesture
                 for camera_id, detections in detection_results.items():
                     for detection in detections:
                         person_id = detection.get('person_id')
@@ -210,10 +197,43 @@ class EdgeDevice:
                                 tracker = self.detection_engine.person_tracker
                                 if person_id in tracker.tracked_persons:
                                     person = tracker.tracked_persons[person_id]
-                                    if person.crossing_direction == "right":
-                                        evasion_crossings.append(detection)
-                                    else:
-                                        normal_crossings.append(detection)
+                                    
+                                    # Only process down->up crossings (entering)
+                                    if person.crossing_direction == "up":
+                                        # Validate if person tapped in validator ROI
+                                        crossing_result = self.rules.on_crossing(person_id)
+                                        classification = crossing_result.get("classification", "unknown")
+                                        tap_confirmed = crossing_result.get("tap_confirmed", False)
+                                        reason = crossing_result.get("reason", "")
+                                        fraud_indicators = crossing_result.get("fraud_indicators", [])
+                                        tap_age = crossing_result.get("tap_age_seconds", 0)
+                                        crossing_count = crossing_result.get("crossing_count", 0)
+                                        
+                                        if classification == "pass" and tap_confirmed:
+                                            # Valid pass - person tapped
+                                            logger.info(
+                                                f"✅ Person {person_id} VALID PASS "
+                                                f"(tap age: {tap_age:.2f}s, crossing #{crossing_count})"
+                                            )
+                                            normal_crossings.append(detection)
+                                        else:
+                                            # Evasion - person did NOT tap or tap invalid
+                                            logger.warning(
+                                                f"❌ Person {person_id} FARE EVASION "
+                                                f"(reason: {reason}, crossing #{crossing_count})"
+                                            )
+                                            
+                                            # Add fraud indicators to event metadata if present
+                                            if fraud_indicators:
+                                                detection["fraud_indicators"] = fraud_indicators
+                                                detection["evasion_reason"] = reason
+                                                logger.error(
+                                                    f"🚨 Person {person_id} FRAUD DETECTED: {fraud_indicators}"
+                                                )
+                                            
+                                            evasion_crossings.append(detection)
+                                    
+                                    # Ignore up->down crossings (person exiting - no validation needed)
 
                 # Create detection events for normal crossings
                 if normal_crossings:
@@ -222,9 +242,9 @@ class EdgeDevice:
                         detections=normal_crossings
                     )
 
-                # Create evasion events for left-to-right crossings
+                # Create evasion events for crossings without tap validation
                 if evasion_crossings:
-                    logger.warning(f"Detected {len(evasion_crossings)} potential fare evasions (left-to-right crossings)")
+                    logger.warning(f"Detected {len(evasion_crossings)} potential fare evasions (no tap detected)")
 
                     import cv2
 
@@ -255,8 +275,8 @@ class EdgeDevice:
                         "event_metadata": {
                             "detections": evasion_crossings,  # Put detections in metadata
                             "confidence_scores": [d.get("confidence", 0) for d in evasion_crossings],
-                            "crossing_direction": "left_to_right",
-                            "detection_method": "computer_vision",
+                            "crossing_direction": "down_to_up_no_tap",
+                            "detection_method": "computer_vision_tap_validation",
                             "event_id": f"cv_evasion_{int(current_time)}"
                         }
                     }

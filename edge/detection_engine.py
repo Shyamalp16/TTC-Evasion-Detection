@@ -99,18 +99,17 @@ class TrackedPerson:
         self.crossing_direction = None  # "up" or "down"
         self.exited_frame = False  # Track if person has left the frame
         self.frames_at_edge = 0  # Track how long person has been at frame edge
-        # Track position relative to gate line
-        x1, _, x2, _ = bbox
-        center_x = (x1 + x2) / 2
-        self.relative_position = center_x / frame_width  # 0-1 normalized
+        # Track position relative to gate line (use TOP edge y1 for horizontal gate line)
+        _, y1, _, _ = bbox
+        self.relative_position = y1 / frame_height  # 0-1 normalized (top edge)
 
     def update_position(self, bbox: List[int], frame_height: int, frame_width: int):
         """Update person's position and check for gate crossing."""
         self.bbox = bbox
         x1, y1, x2, y2 = bbox
-        center_x = (x1 + x2) / 2
+        # Use TOP edge (y1) for crossing detection
         old_relative = self.relative_position
-        self.relative_position = center_x / frame_width
+        self.relative_position = y1 / frame_height
 
         # Check if person has left the frame boundaries
         margin = settings.person_exit_margin
@@ -156,27 +155,23 @@ class TrackedPerson:
             if hasattr(self, 'frames_at_edge'):
                 self.frames_at_edge = 0
 
-        # Check for crossing
-        gate_line = settings.gate_crossing_line_x
-        hysteresis = settings.gate_crossing_hysteresis / frame_width
+        # Check for crossing (vertical movement across horizontal gate line)
+        # Only detect down->up crossings (top edge crosses upward)
+        gate_line = settings.gate_crossing_line_y
+        hysteresis = settings.gate_crossing_hysteresis / frame_height
 
-        if settings.gate_crossing_direction == "right":
-            # Person moving from left to right (evasion)
-            if old_relative < gate_line - hysteresis and self.relative_position > gate_line + hysteresis:
-                if not self.crossed_gate:
-                    self.crossed_gate = True
-                    self.crossing_direction = "right"
-                    logger.info(f"Person {self.person_id} crossed gate from left to right (evasion)")
-                    return True
-        elif settings.gate_crossing_direction == "left":
-            # Person moving from right to left
-            if old_relative > gate_line + hysteresis and self.relative_position < gate_line - hysteresis:
-                if not self.crossed_gate:
-                    self.crossed_gate = True
-                    self.crossing_direction = "left"
-                    logger.info(f"Person {self.person_id} crossed gate from right to left")
-                    return True
-
+        # Person moving from down to up (top edge crosses gate line upward)
+        # old_relative is higher value (lower on screen), new is lower value (higher on screen)
+        if old_relative > gate_line + hysteresis and self.relative_position < gate_line - hysteresis:
+            if not self.crossed_gate:
+                self.crossed_gate = True
+                self.crossing_direction = "up"
+                logger.info(f"Person {self.person_id} TOP EDGE crossed gate from down to up (entering - needs validation)")
+                return True
+        
+        # Ignore up->down crossings (person exiting)
+        # We don't track or validate exits
+        
         return False
 
 
@@ -234,7 +229,6 @@ class PersonTracker:
             if best_match_id is not None:
                 # Update existing track
                 person = self.tracked_persons[best_match_id]
-                logger.debug(f"Matched detection at {bbox} to existing track {best_match_id}")
                 crossed = person.update_position(bbox, frame_height, frame_width)
                 # Mark as seen on this frame
                 person.last_seen_frame = self.frame_count
@@ -243,12 +237,10 @@ class PersonTracker:
                 matched_track_ids.add(best_match_id)
             else:
                 # Create new track
-                logger.debug(f"Creating new track ID {self.next_person_id} for detection at {bbox}")
                 new_person = TrackedPerson(self.next_person_id, bbox, frame_height, frame_width)
                 self.tracked_persons[self.next_person_id] = new_person
                 matched_track_ids.add(self.next_person_id)
                 self.next_person_id += 1
-                logger.debug(f"Active tracks after creating new: {list(self.tracked_persons.keys())}")
 
             # Enrich detection with tracking info
             enriched_detection = dict(detection)
@@ -281,7 +273,6 @@ class PersonTracker:
         for person_id in to_remove:
             del self.tracked_persons[person_id]
 
-        logger.debug(f"Tracking: {len(self.tracked_persons)} active tracks, {len(to_remove)} removed")
         return enriched_detections, crossed_person_ids
 
     def _calculate_iou(self, bbox1: List[int], bbox2: List[int]) -> float:

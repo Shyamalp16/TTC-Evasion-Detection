@@ -12,8 +12,9 @@ validator_roi:
 
 # gate_line: Line coordinates just past barrier for gate crossing detection
 # Format: [x1, y1, x2, y2] where (x1,y1) is start point, (x2,y2) is end point
+# Horizontal line in the middle of the screen for down->up crossing validation
 gate_line:
-  - 640   # x1 - start x coordinate (typically center of frame)
-  - 240   # y1 - start y coordinate
-  - 640   # x2 - end x coordinate (vertical line at center)
-  - 480   # y2 - end y coordinate
+  - 0     # x1 - start x coordinate (left edge)
+  - 360   # y1 - start y coordinate (middle of frame, ~720p)
+  - 1280  # x2 - end x coordinate (right edge)
+  - 360   # y2 - end y coordinate (horizontal line at middle)

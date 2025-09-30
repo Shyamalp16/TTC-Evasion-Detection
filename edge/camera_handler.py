@@ -56,10 +56,10 @@ class CameraHandler:
                     # Set buffer to minimum to reduce lag
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     # Don't set unrealistic FPS - let stream determine this
-                    # cap.set(cv2.CAP_PROP_FPS, 30)  # Commented out - let camera decide
+                    cap.set(cv2.CAP_PROP_FPS, 60)  # Commented out - let camera decide
                     # Only set resolution if needed
-                    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                    # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 
                 # Fallback to default webcam 0 if open failed and this looks like a stream/path
                 if (not cap or not cap.isOpened()) and isinstance(url, str) and not url.isdigit():

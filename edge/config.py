@@ -42,8 +42,8 @@ class Settings(BaseSettings):
 
     # Gate Crossing Settings
     enable_gate_crossing: bool = True
-    gate_crossing_line_x: float = 0.5  # Horizontal position (0-1) where gate crossing line is drawn
-    gate_crossing_direction: str = "right"  # "left" or "right" - direction of crossing (person moving from left to right or right to left)
+    gate_crossing_line_y: float = 0.5  # Vertical position (0-1) where horizontal gate crossing line is drawn
+    gate_crossing_direction: str = "up"  # "up" or "down" - direction of crossing (person moving from down to up validates)
     gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
     person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
     person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
@@ -59,13 +59,6 @@ class Settings(BaseSettings):
     detection_interval: float = 0.15  # seconds
     preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)
     
-    # Gate Crossing Settings
-    enable_gate_crossing: bool = True
-    gate_crossing_line_x: float = 0.5  # Horizontal position (0-1) where gate crossing line is drawn
-    gate_crossing_direction: str = "right"  # "left" or "right"
-    gate_crossing_hysteresis: int = 10  # Pixels of hysteresis to prevent bouncing
-    person_tracking_max_age: int = 15  # Frames before forgetting a tracked person
-    person_tracking_iou_threshold: float = 0.1  # IOU threshold for matching detections to tracks
     person_exit_edge_margin: int = 15  # Pixels from frame edge to consider as potentially exiting
     person_exit_edge_frames: int = 3  # Frames at edge before considering person exited
     person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
@@ -86,6 +79,13 @@ class Settings(BaseSettings):
     gesture_dwell_min_s: float = 0.25
     gesture_dwell_max_s: float = 1.0
     pose_full_frame: bool = False
+    
+    # Tap Validation Security Settings
+    tap_validity_window_seconds: float = 5.0      # How long tap is valid after detection
+    tap_max_age_seconds: float = 5.0              # Maximum age of tap at crossing time
+    tap_allow_reuse: bool = False                 # Allow same tap for multiple crossings (should be False)
+    tap_max_attempts: int = 5                     # Max tap attempts before flagging suspicious
+    tap_cooldown_after_use_seconds: float = 2.0   # Cooldown before detecting new tap after use
 
     # Overlay/Visualization
     pose_overlay_enabled: bool = True
