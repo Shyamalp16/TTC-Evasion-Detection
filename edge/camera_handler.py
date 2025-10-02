@@ -55,7 +55,7 @@ class CameraHandler:
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 
                 # Fallback to default webcam 0 if open failed and this looks like a stream/path
-                if (not cap or not cap.isOpened()) and isinstance(url, str) and not url.isdigit():
+                if (not cap or not cap.isOpened()) and not (isinstance(url, int) or (isinstance(url, str) and url.isdigit())):
                     if settings.disable_webcam_fallback:
                         logger.error(f"Primary source failed for camera {i}: {url}. Webcam fallback disabled.")
                     else:
@@ -85,13 +85,9 @@ class CameraHandler:
         """Read frame from specified camera."""
         if camera_index >= len(self.cameras):
             return None
-            
+
         cap = self.cameras[camera_index]
-        
-        for _ in range(5):
-            cap.grab()
-        
-        ret, frame = cap.retrieve()
+        ret, frame = cap.read()
         
         if not ret or frame is None:
             logger.warning(f"Failed to read frame from camera {camera_index}")

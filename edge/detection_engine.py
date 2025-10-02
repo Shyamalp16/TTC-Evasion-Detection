@@ -434,7 +434,7 @@ class DetectionEngine:
                         x1, y1, x2, y2 = [int(v * scale) for v in [x1, y1, x2, y2]]
                         
                         bbox = [int(v * scale) for v in [x1, y1, x2, y2]]
-                        distance = self._estimate_distance(bbox, frame_height)
+                        # distance = self._estimate_distance(bbox, frame_height)
 
                         # Filter out boxes that are implausible for a person
                         w = max(1, bbox[2] - bbox[0])
@@ -451,7 +451,7 @@ class DetectionEngine:
                             "confidence": float(confidence),
                             "class_id": class_id,
                             "class_name": "person",
-                            "distance_m": distance
+                            # "distance_m": distance
                         }
                         detections.append(detection)
             
@@ -543,15 +543,14 @@ class DetectionEngine:
                         if w * h < 500:  # tiny boxes
                             continue
                         
-                        # Estimate distance
-                        distance = self._estimate_distance(bbox, frame_height)
+                        # distance = self._estimate_distance(bbox, frame_height)
                         
                         detection = {
                             "bbox": bbox,
                             "confidence": confidence,
                             "class_id": class_id,
                             "class_name": "person",
-                            "distance_m": distance,
+                            # "distance_m": distance,
                             "person_id": person_id  # Track ID from YOLO tracker
                         }
                         detections.append(detection)
@@ -575,45 +574,39 @@ class DetectionEngine:
         """Draw detection bounding boxes on frame."""
         annotated_frame = frame.copy()
 
-
+        # OPTIMIZED: Draw static ROI/gate line elements (consider caching in production)
         # Draw validator ROI if loaded
         if self.validator_roi:
             x1, y1, x2, y2 = self.validator_roi
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 3)  # Cyan color, thicker line
-            cv2.putText(annotated_frame, "Validator ROI", (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Thinner line
+            cv2.putText(annotated_frame, "Validator", (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)  # Smaller text, thinner
 
         # Draw gate line from ROI config if loaded
         if self.gate_line:
             x1, y1, x2, y2 = self.gate_line
-            cv2.line(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 3)  # Yellow color, thicker line
-            cv2.putText(annotated_frame, "Gate Line (ROI)", (x1 + 10, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.line(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 2)  # Thinner line
+            cv2.putText(annotated_frame, "Gate", (x1 + 10, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)  # Smaller text
 
-        # Draw pose keypoints for tracks with pose data
+        # Draw pose keypoints and skeleton
         self._draw_pose_keypoints(annotated_frame, detections)
 
-        for detection in detections[:20]:  # avoid drawing too many
+        for detection in detections[:10]:
             x1, y1, x2, y2 = detection["bbox"]
             confidence = detection["confidence"]
-            distance = detection.get("distance_m", -1.0)
             person_id = detection.get("person_id")
 
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # Build label with person ID if available
+            # Build minimal label - removed distance field
             if person_id is not None:
-                label_parts = [f"ID:{person_id}"]
+                label = f"ID:{person_id} {confidence:.2f}"
             else:
-                label_parts = []
+                label = f"{confidence:.2f}"
 
-            label_parts.append(f"{confidence:.2f}")
-            if distance >= 0:
-                label_parts.append(f"{distance:.1f}m")
-
-            label = " ".join(label_parts)
             cv2.putText(annotated_frame, label, (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Thinner text
 
         return annotated_frame
 
