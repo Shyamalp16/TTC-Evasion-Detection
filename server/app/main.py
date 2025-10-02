@@ -48,10 +48,9 @@ async def health_check():
 
 def _add_local_timestamp(event: Event) -> EventResponse:
     tz = ZoneInfo(settings.time_zone)
-    # If timestamp is naive, assume server local time
     ts = event.timestamp
     if ts.tzinfo is None:
-        ts_local = ts.astimezone(tz)
+        ts_local = ts.localize(tz)
     else:
         ts_local = ts.astimezone(tz)
     resp = EventResponse.from_orm(event)

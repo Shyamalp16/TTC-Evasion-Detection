@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     camera_urls: List[str] = [
         # "0",  # Laptop webcam index 0
         # "1",  # Uncomment if you have a second webcam
-        "rtsp://admin:admin@10.0.0.231:8554/live",
+        # "rtsp://admin:admin@10.0.0.231:8554/live",
+        "rtsp://Shyamalp16:Shyamalp16@10.0.0.242:554/stream2",
         # "rtsp://admin:password@192.168.1.101:554/stream1"
     ]
     primary_camera_id: int = 0  # Primary camera for snapshots and events

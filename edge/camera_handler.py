@@ -34,11 +34,8 @@ class CameraHandler:
                     else:
                         cap = cv2.VideoCapture(device_index); tried.append("DEFAULT")
                 else:
-                    # Prefer FFmpeg backend with TCP for RTSP streams when available
-                    # Try FFmpeg with explicit options first
                     ffmpeg_backend_flag = getattr(cv2, "CAP_FFMPEG", None)
-                    rtsp_url = url  # keep URL unchanged to avoid server 404 with unknown params
-                    # Provide options via OPENCV_FFMPEG_CAPTURE_OPTIONS environment variable
+                    rtsp_url = url  
                     try:
                         if settings.ffmpeg_capture_options:
                             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = settings.ffmpeg_capture_options
@@ -47,17 +44,13 @@ class CameraHandler:
                     if ffmpeg_backend_flag is not None:
                         cap = cv2.VideoCapture(rtsp_url, ffmpeg_backend_flag); tried.append("FFMPEG")
                     if not cap or not cap.isOpened():
-                        # Fallback to default backend
                         cap.release() if cap else None
                         cap = cv2.VideoCapture(rtsp_url); tried.append("SOURCE")
                 
                 # Configure for low-latency streaming
                 if cap:
-                    # Set buffer to minimum to reduce lag
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    # Don't set unrealistic FPS - let stream determine this
-                    cap.set(cv2.CAP_PROP_FPS, 60)  # Commented out - let camera decide
-                    # Only set resolution if needed
+                    cap.set(cv2.CAP_PROP_FPS, 60)
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
                 

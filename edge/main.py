@@ -382,10 +382,8 @@ class EdgeDevice:
 
 async def main():
     """Main application entry point."""
-    # Configure logging
-    logger.remove()  # remove default console sink
+    logger.remove() 
     
-    # File sink - captures everything
     logger.add(
         settings.log_file,
         rotation="1 day",
@@ -393,11 +391,9 @@ async def main():
         level=settings.file_log_level
     )
     
-    # Console sink - ONLY tap detection, gate crossing, and tracking messages
     def tap_detection_filter(record):
         """Filter to only show tap detection, gate crossing, and track lifecycle messages."""
         message = record["message"]
-        # Allow tap detection, gate crossing, and tracking lifecycle messages
         important_keywords = [
             "Tap DETECTED",
             "VALID PASS",
@@ -415,7 +411,6 @@ async def main():
         ]
         return any(keyword in message for keyword in important_keywords)
     
-    # Always enable console for tap detection (override settings)
     logger.add(
         lambda msg: print(msg, end=""),
         level="INFO",
@@ -425,7 +420,6 @@ async def main():
     
     logger.info("Starting SnitchSystem Edge Device")
     
-    # Create and initialize edge device
     edge_device = EdgeDevice()
     
     if not await edge_device.initialize():
