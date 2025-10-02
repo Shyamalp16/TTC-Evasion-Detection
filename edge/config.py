@@ -21,11 +21,11 @@ class Settings(BaseSettings):
     rtsp_transport: str = "tcp"  # tcp (more reliable) or udp (lower latency)
     ffmpeg_capture_options: str = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
     
-    detection_confidence: float = 0.5
+    detection_confidence: float = 0.6
     detection_iou_threshold: float = 0.45
     detection_classes: List[int] = [0]  #person clasa
     yolo_model_path: str = "yolo11m.pt"  
-    detection_downscale_ratio: float = 1.0  
+    detection_downscale_ratio: float = 0.8 
     reference_person_height_m: float = 1.7  
     camera_focal_length_mm: float = 3.6  
     camera_sensor_height_mm: float = 2.76  
@@ -43,10 +43,10 @@ class Settings(BaseSettings):
     server_api_key: str = "your-api-key-here"
     server_timeout: int = 30
     
-    frame_skip: int = 1  # Process every 5th frame (dev: smoother UI)
+    frame_skip: int = 2  # Process every 5th frame (dev: smoother UI)
     max_queue_size: int = 100
-    detection_interval: float = 0.15 
-    preview_interval: float = 0.03 
+    detection_interval: float = 0.2
+    preview_interval: float = 0.01
     
     
     person_exit_edge_margin: int = 1
@@ -79,10 +79,11 @@ class Settings(BaseSettings):
     
     tap_require_arm_extension: bool = False       # Require arm to be extended forward (strict)
     tap_require_torso_level: bool = False         # Require wrist at torso level (strict)
-    tap_min_stable_frames: int = 2                # Minimum frames for stability
-    tap_min_stable_duration: float = 0.15         # Minimum stable duration in seconds
+    tap_min_stable_frames: int = 1                # Minimum frames for stability
+    tap_min_stable_duration: float = 0.1         # Minimum stable duration in seconds
     tap_variance_threshold: float = 40.0          # Max position variance in pixels
     tap_enable_debug_logging: bool = True         # Log why tap detection fails
+    tap_wrist_offset_px: int = 30
 
 
     pose_overlay_enabled: bool = True

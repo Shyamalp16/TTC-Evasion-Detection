@@ -36,7 +36,9 @@ class EdgeDevice:
         self._last_cleanup = 0.0
         self._cleanup_interval = 5.0  
         self._pose_cooldown_per_person: Dict[int, float] = {}  
-        self._pose_estimation_interval = 0.5  
+        self._pose_estimation_interval = 0.1
+        self._last_waitkey_call = 0.0
+        self._waitkey_interval = 0.033  # 30 FPS throttle for UI responsiveness  
         
     async def initialize(self) -> bool:
         """Initialize all components."""
@@ -95,14 +97,17 @@ class EdgeDevice:
                 if should_run_detection:
                     self._last_detection_trigger = now
                     if not self._detection_task or self._detection_task.done():
-                        self._detection_task = asyncio.create_task(self._process_frames(list(frames)))
+                        self._detection_task = asyncio.create_task(self._process_frames(frames))
 
                 self.frame_count += 1
 
-                # Handle preview keypress (press 'q' to quit)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.is_running = False
-                    break
+                # Handle preview keypress (press 'q' to quit) - throttled to 30 FPS
+                now = time.time()
+                if (now - self._last_waitkey_call) >= self._waitkey_interval:
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        self.is_running = False
+                        break
+                    self._last_waitkey_call = now
 
                 # Small delay primarily for UI pacing
                 await asyncio.sleep(settings.preview_interval)

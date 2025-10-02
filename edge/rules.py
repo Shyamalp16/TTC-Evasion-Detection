@@ -128,8 +128,8 @@ class ValidatorAndGateRules:
         wrist_x, wrist_y = dominant_wrist['x'], dominant_wrist['y']
         wrist_visibility = dominant_wrist.get('visibility', 0)
 
-        # Rule 1: Wrist must be inside validator_roi (MANDATORY)
-        wrist_in_roi = self._point_in_roi((int(wrist_x), int(wrist_y)), validator_roi)
+        # Rule 1: Wrist must be inside validator_roi (MANDATORY) - with finger extension support
+        wrist_in_roi = self._check_extended_wrist_in_roi(int(wrist_x), int(wrist_y), validator_roi)
         if not wrist_in_roi:
             # Only log occasionally when wrist is outside ROI
             return
@@ -246,6 +246,27 @@ class ValidatorAndGateRules:
         x, y = point
         x1, y1, x2, y2 = roi
         return x1 <= x <= x2 and y1 <= y <= y2
+
+    def _check_extended_wrist_in_roi(self, wrist_x: int, wrist_y: int, validator_roi: Tuple[int, int, int, int], offset: int = None) -> bool:
+        """Check if wrist OR extended finger area is in ROI."""
+        if offset is None:
+            offset = getattr(self.cfg, 'tap_wrist_offset_px', 30)
+        
+        x1, y1, x2, y2 = validator_roi
+        
+        # Check original wrist position first
+        if x1 <= wrist_x <= x2 and y1 <= wrist_y <= y2:
+            return True
+        
+        # Check extended area (simulating finger reach)
+        # Extend horizontally and vertically to account for finger extension
+        extended_x1 = wrist_x - offset
+        extended_x2 = wrist_x + offset
+        extended_y1 = wrist_y - offset
+        extended_y2 = wrist_y + offset
+        
+        # Check if extended area overlaps with ROI
+        return not (extended_x2 < x1 or extended_x1 > x2 or extended_y2 < y1 or extended_y1 > y2)
 
     def on_crossing(self, track_id: int) -> Dict[str, Any]:
         """Classify crossing based on tap gesture confirmation with multi-layer security validation."""
@@ -404,6 +425,20 @@ class ValidatorAndGateRules:
             )
         
         return fraud_flags
+
+    def _check_extended_wrist_in_roi(self, wrist_x: float, wrist_y: float, validator_roi: Tuple[int, int, int, int]) -> bool:
+        """Check if the extended wrist is in the validator ROI."""
+        x1, y1, x2, y2 = validator_roi
+
+        if x1 <= wrist_x <= x2 and y1 <= wrist_y <= y2:
+            return True
+        
+        extended_x1 = wrist_x - self.cfg.tap_wrist_offset_px
+        extended_x2 = wrist_x + self.cfg.tap_wrist_offset_px
+        extended_y1 = wrist_y - self.cfg.tap_wrist_offset_px
+        extended_y2 = wrist_y + self.cfg.tap_wrist_offset_px
+
+        return not (extended_x2 < x1 or extended_x1 > x2 or extended_y2 < y1 or extended_y1 > y2)
 
     def get_status(self, track_id: int) -> Dict[str, Any]:
         return self._get_track(track_id).copy()
