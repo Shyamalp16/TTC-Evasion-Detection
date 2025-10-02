@@ -328,7 +328,23 @@ class EdgeDevice:
             detections = self._last_detections.get(camera_id) or []
             try:
                 annotated = self.detection_engine.draw_detections(frame, detections)
+                window_name = f"Camera {camera_id}"
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(window_name, 1920, 1080)
+
+                if not hasattr(self, '_windows_created'):
+                    self._windows_created = set()
+
+                if camera_id not in self._windows_created:
+                    import platform
+                    if platform.system() == "Windows":
+                        import ctypes
+                        hwnd = ctypes.windll.user32.FindWindowW(None, window_name)
+                        if hwnd:
+                            ctypes.windll.user32.ShowWindow(hwnd, 3)
+                    self._windows_created.add(camera_id)
                 cv2.imshow(f"Camera {camera_id}", annotated)
+                
             except Exception:
                 pass
     

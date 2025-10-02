@@ -29,9 +29,7 @@ class YOLOPoseEstimator:
         """Initialize YOLO pose model."""
         self.model = None
         self.is_initialized = False
-        # Thread pool executor for async pose inference
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose_inference")
-        # YOLO keypoint mapping (COCO format)
         self.keypoint_names = [
             'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
             'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
@@ -77,7 +75,6 @@ class YOLOPoseEstimator:
             if image is None or image.size == 0:
                 return None
 
-            # Run YOLO pose inference
             results = self.model(image, conf=settings.pose_confidence_threshold, verbose=False)
             
             if not results or len(results) == 0:
@@ -85,7 +82,6 @@ class YOLOPoseEstimator:
 
             result = results[0]
             
-            # Check if keypoints are available
             if result.keypoints is None or result.keypoints.data is None:
                 return None
             
@@ -94,13 +90,11 @@ class YOLOPoseEstimator:
             if len(keypoints_data) == 0:
                 return None
             
-            # Use the first person detected (highest confidence)
             kpts = keypoints_data[0].cpu().numpy()  # Shape: (17, 3) -> [x, y, confidence]
             
             if len(kpts) < 17:
                 return None
-            
-            # Convert to our expected format
+
             keypoints = {}
             h, w = image.shape[:2]
             
@@ -146,14 +140,11 @@ class TrackedPerson:
         self.bbox = bbox
         x1, y1, x2, y2 = bbox
         
-        # Track if this is the first update (to handle late detections)
         is_first_update = (self.previous_y1 == self.current_y1)
         
-        # Update position tracking
         self.previous_y1 = self.current_y1
         self.current_y1 = y1
 
-        # Check if person has left the frame boundaries
         margin = settings.person_exit_margin
         if (x2 < -margin or x1 > frame_width + margin or
             y2 < -margin or y1 > frame_height + margin):
@@ -161,7 +152,6 @@ class TrackedPerson:
             self.exited_frame = True
             return False  # Don't process gate crossing for exited persons
 
-        # Check if person's bounding box is mostly outside the frame
         bbox_width = x2 - x1
         bbox_height = y2 - y1
         if bbox_width > 0 and bbox_height > 0:
@@ -174,17 +164,14 @@ class TrackedPerson:
                 self.exited_frame = True
                 return False
 
-        # Check if bounding box is very small (person far away)
         if bbox_width > 0 and bbox_height > 0 and (bbox_width < 20 or bbox_height < 20):
             logger.debug(f"Person {self.person_id} bbox too small ({bbox_width}x{bbox_height})")
             self.exited_frame = True
             return False
 
-        # Also check if person is very close to frame edges (might be partially exiting)
         edge_margin = settings.person_exit_edge_margin
         if (x2 < edge_margin or x1 > frame_width - edge_margin or
             y2 < edge_margin or y1 > frame_height - edge_margin):
-            # If they've been at the edge for multiple frames, consider them exited
             if not hasattr(self, 'frames_at_edge'):
                 self.frames_at_edge = 0
             self.frames_at_edge += 1
@@ -193,28 +180,19 @@ class TrackedPerson:
                 self.exited_frame = True
                 return False
         else:
-            # Reset counter if not at edge
             if hasattr(self, 'frames_at_edge'):
                 self.frames_at_edge = 0
 
-        # Check for crossing (vertical movement across horizontal gate line)
-        # Only detect down->up crossings (top edge crosses upward)
         if self.gate_line_y_pixels is None:
-            # Fallback to normalized position if gate line not provided
             gate_line_pixels = frame_height * settings.gate_crossing_line_y
         else:
-            # Use actual gate line from ROI config (in pixels)
             gate_line_pixels = self.gate_line_y_pixels
         
         hysteresis_pixels = settings.gate_crossing_hysteresis
 
-        # Person moving from down to up (bottom of frame to top)
-        # previous_y1 is higher value (lower on screen), current_y1 is lower value (higher on screen)
         crossed_upward = (self.previous_y1 > gate_line_pixels + hysteresis_pixels and 
                          self.current_y1 < gate_line_pixels - hysteresis_pixels)
         
-        # SPECIAL CASE: Person detected when already past gate line (late detection)
-        # If first update and already above gate line, trigger immediate crossing
         if is_first_update and not self.crossed_gate:
             if self.current_y1 < gate_line_pixels - hysteresis_pixels:
                 self.crossed_gate = True
@@ -225,7 +203,6 @@ class TrackedPerson:
                 )
                 return True
         
-        # Normal crossing detection (transition based)
         if crossed_upward and not self.crossed_gate:
             self.crossed_gate = True
             self.crossing_direction = "up"
@@ -234,10 +211,6 @@ class TrackedPerson:
                 f"from down to up: {self.previous_y1}px → {self.current_y1}px (entering - needs validation)"
             )
             return True
-        
-        # Ignore up->down crossings (person exiting)
-        # We don't track or validate exits
-        
         return False
 
 
@@ -250,7 +223,6 @@ class GateCrossingMonitor:
 
     def __init__(self, gate_line: Optional[List[int]] = None):
         self.tracked_persons: Dict[int, TrackedPerson] = {}
-        # Extract gate line y-coordinate from ROI config (horizontal line: y1 == y2)
         self.gate_line_y = None
         if gate_line and len(gate_line) >= 4:
             # gate_line format: [x1, y1, x2, y2]
@@ -273,21 +245,17 @@ class GateCrossingMonitor:
                 
             bbox = detection["bbox"]
             
-            # Get or create tracked person (using ID from YOLO tracker)
             if person_id not in self.tracked_persons:
-                # New person from YOLO tracker - create tracking state with gate line position
                 self.tracked_persons[person_id] = TrackedPerson(
                     person_id, bbox, frame_height, frame_width, gate_line_y=self.gate_line_y
                 )
             
-            # Update position and check for crossing
             person = self.tracked_persons[person_id]
             crossed = person.update_position(bbox, frame_height, frame_width)
             
             if crossed:
                 crossed_person_ids.append(person_id)
 
-        # Clean up exited persons
         to_remove = []
         for person_id, person in self.tracked_persons.items():
             if person.exited_frame:
@@ -308,26 +276,19 @@ class DetectionEngine:
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
         
-        # Thread pool executor for async inference (CPU-bound operations)
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yolo_inference")
         
-        # Load ROI configuration first (needed for gate monitor)
         self.validator_roi = None
         self.gate_line = None
         self._load_roi_config()
         
-        # Gate crossing monitor - tracks crossing state using IDs from YOLO tracker
         self.gate_monitor = GateCrossingMonitor(gate_line=self.gate_line) if settings.enable_gate_crossing else None
         
-        # YOLO tracking state per camera
-        # YOLO tracker maintains state internally, we just need to track camera IDs
         self._camera_tracker_initialized: Dict[int, bool] = {}
 
-        # MEMORY OPTIMIZATION: Pre-allocated structures for detection results
         self._detection_results: Dict[int, List[Dict[str, Any]]] = {}
         self._all_crossed_ids: List[int] = []
 
-        # Initialize pose estimator
         try:
             self.pose_estimator = YOLOPoseEstimator()
             # logger.info("YOLO pose estimator created (will initialize with detection engine)")
@@ -358,7 +319,6 @@ class DetectionEngine:
     async def initialize(self) -> bool:
         """Initialize YOLO model and pose estimator."""
         try:
-            # Load YOLOv8 detection model
             self.model = YOLO(settings.yolo_model_path)
             self.is_initialized = True
             self._compute_focal_length_pixels()
@@ -385,8 +345,6 @@ class DetectionEngine:
             if sensor_height <= 0 or focal_length_mm <= 0:
                 return
 
-            # Using a default vertical resolution assumption (since frame height may vary)
-            # We'll adjust focal length per-frame based on actual height.
             self._focal_pixels = {
                 "focal_length_mm": focal_length_mm,
                 "sensor_height_mm": sensor_height
@@ -406,7 +364,6 @@ class DetectionEngine:
             sensor_height_mm = self._focal_pixels["sensor_height_mm"]
             focal_length_mm = self._focal_pixels["focal_length_mm"]
 
-            # Convert focal length to pixel units using frame height
             focal_length_pixels = (focal_length_mm / sensor_height_mm) * frame_height
 
             distance_m = (settings.reference_person_height_m * focal_length_pixels) / bbox_height_pixels
@@ -447,18 +404,15 @@ class DetectionEngine:
                         confidence = box.conf[0].cpu().numpy()
                         class_id = int(box.cls[0].cpu().numpy())
                         
-                        # Scale boxes back to original frame size
                         x1, y1, x2, y2 = [int(v * scale) for v in [x1, y1, x2, y2]]
                         
                         bbox = [int(v * scale) for v in [x1, y1, x2, y2]]
                         # distance = self._estimate_distance(bbox, frame_height)
 
-                        # Filter out boxes that are implausible for a person
                         w = max(1, bbox[2] - bbox[0])
                         h = max(1, bbox[3] - bbox[1])
                         aspect = w / h
                         if aspect < 0.2 or aspect > 4.0:
-                            # Extremely tall/skinny or wide/flat - likely a false positive
                             continue
                         if w * h < 500:  # tiny boxes
                             continue
@@ -487,7 +441,6 @@ class DetectionEngine:
         crossed_person_ids = []
         
         try:
-            # Initialize tracker for this camera if not already done
             if camera_id not in self._camera_tracker_initialized:
                 logger.info(
                     f"Initializing YOLO {settings.yolo_tracker} tracker for camera {camera_id} | "
@@ -495,24 +448,20 @@ class DetectionEngine:
                 )
                 self._camera_tracker_initialized[camera_id] = True
             
-            # Run YOLO tracking (combines detection + tracking in one step)
             try:
-                # Downscale for speed if needed
                 if self.downscale_ratio != 1.0:
                     small_frame = cv2.resize(frame, None, fx=self.downscale_ratio, fy=self.downscale_ratio, 
                                            interpolation=cv2.INTER_LINEAR)
                 else:
                     small_frame = frame
                 
-                # Use YOLO's track() method instead of predict()
-                # This automatically handles tracking between frames
                 track_results = self.model.track(
                     small_frame,
                     conf=settings.track_conf,
                     iou=settings.track_iou,
-                    classes=settings.detection_classes,  # Person class only
-                    persist=settings.track_persist,  # Persist tracks between frames
-                    tracker=settings.yolo_tracker,  # Use configured tracker (botsort/bytetrack)
+                    classes=settings.detection_classes,
+                    persist=settings.track_persist,
+                    tracker=settings.yolo_tracker,
                     verbose=False
                 )
                 
@@ -523,30 +472,24 @@ class DetectionEngine:
                 scale = 1.0 / self.downscale_ratio if self.downscale_ratio != 0 else 1.0
                 frame_height = frame.shape[0]
                 
-                # Extract tracking results
                 if result.boxes is not None and len(result.boxes) > 0:
                     boxes = result.boxes
                     
                     for box in boxes:
-                        # Get bounding box
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                         confidence = float(box.conf[0].cpu().numpy())
                         class_id = int(box.cls[0].cpu().numpy())
                         
-                        # Get track ID (this is provided by YOLO tracker)
                         track_id = box.id
                         if track_id is not None:
                             person_id = int(track_id.cpu().numpy()[0])
                         else:
-                            # Fallback: if no track ID, skip this detection
                             logger.debug(f"Skipping detection without track ID")
                             continue
                         
-                        # Scale boxes back to original frame size
                         x1, y1, x2, y2 = [int(v * scale) for v in [x1, y1, x2, y2]]
                         bbox = [x1, y1, x2, y2]
                         
-                        # Filter out implausible boxes
                         w = max(1, bbox[2] - bbox[0])
                         h = max(1, bbox[3] - bbox[1])
                         aspect = w / h
@@ -555,19 +498,16 @@ class DetectionEngine:
                         if w * h < 500:  # tiny boxes
                             continue
                         
-                        # distance = self._estimate_distance(bbox, frame_height)
                         
                         detection = {
                             "bbox": bbox,
                             "confidence": confidence,
                             "class_id": class_id,
                             "class_name": "person",
-                            # "distance_m": distance,
-                            "person_id": person_id  # Track ID from YOLO tracker
+                            "person_id": person_id
                         }
                         detections.append(detection)
                 
-                # Monitor gate crossings using YOLO-assigned track IDs
                 if self.gate_monitor and detections:
                     frame_height, frame_width = frame.shape[:2]
                     detections, crossed_person_ids = self.gate_monitor.update(detections, frame_height, frame_width)
@@ -585,21 +525,17 @@ class DetectionEngine:
         Detect and track persons in multiple frames using YOLO's built-in tracker (async).
         Returns: (detection_results, crossed_person_ids)
         """
-        # MEMORY OPTIMIZATION: Reuse pre-allocated structures (clear instead of recreate)
         self._detection_results.clear()
         self._all_crossed_ids.clear()
         
-        # Process frames in parallel using executor
         loop = asyncio.get_event_loop()
         tasks = [
             loop.run_in_executor(self._executor, self._detect_and_track_frame_blocking, camera_id, frame)
             for camera_id, frame in frames
         ]
         
-        # Wait for all detection tasks to complete
         detection_results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Aggregate results into pre-allocated structures
         for result in detection_results:
             if isinstance(result, Exception):
                 logger.error(f"Detection task failed: {result}")
@@ -615,22 +551,18 @@ class DetectionEngine:
         """Draw detection bounding boxes on frame."""
         annotated_frame = frame.copy()
 
-        # OPTIMIZED: Draw static ROI/gate line elements (consider caching in production)
-        # Draw validator ROI if loaded
         if self.validator_roi:
             x1, y1, x2, y2 = self.validator_roi
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Thinner line
             cv2.putText(annotated_frame, "Validator", (x1, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)  # Smaller text, thinner
 
-        # Draw gate line from ROI config if loaded
         if self.gate_line:
             x1, y1, x2, y2 = self.gate_line
             cv2.line(annotated_frame, (x1, y1), (x2, y2), (255, 255, 0), 2)  # Thinner line
             cv2.putText(annotated_frame, "Gate", (x1 + 10, y1 - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)  # Smaller text
 
-        # Draw pose keypoints and skeleton
         self._draw_pose_keypoints(annotated_frame, detections)
 
         for detection in detections[:10]:
@@ -640,7 +572,6 @@ class DetectionEngine:
 
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # Build minimal label - removed distance field
             if person_id is not None:
                 label = f"ID:{person_id} {confidence:.2f}"
             else:
@@ -660,7 +591,6 @@ class DetectionEngine:
             if not pose_keypoints:
                 continue
 
-            # Helper function to check if keypoint is visible in frame
             def is_keypoint_visible(kp: Dict[str, Any], margin: int = 10) -> bool:
                 """Check if keypoint is within frame boundaries with margin."""
                 x, y = int(kp['x']), int(kp['y'])
@@ -668,7 +598,6 @@ class DetectionEngine:
                         margin <= y < frame_height - margin and
                         kp['visibility'] > 0.5)
 
-            # Define key connections for skeleton (simplified)
             skeleton_connections = [
                 ('left_shoulder', 'right_shoulder'),
                 ('left_shoulder', 'left_elbow'),
@@ -686,40 +615,36 @@ class DetectionEngine:
                 ('nose', 'right_shoulder'),
             ]
 
-            # Draw skeleton connections only for visible keypoints
             for start_name, end_name in skeleton_connections:
                 if start_name in pose_keypoints and end_name in pose_keypoints:
                     start_kp = pose_keypoints[start_name]
                     end_kp = pose_keypoints[end_name]
 
-                    # Only draw connection if BOTH keypoints are visible in frame
                     if is_keypoint_visible(start_kp) and is_keypoint_visible(end_kp):
                         cv2.line(frame,
                                 (int(start_kp['x']), int(start_kp['y'])),
                                 (int(end_kp['x']), int(end_kp['y'])),
                                 (255, 255, 255), 2)  # White skeleton lines
 
-            # Highlight key points only if they're visible in frame
             key_points = ['left_wrist', 'right_wrist', 'left_elbow', 'right_elbow',
                          'left_shoulder', 'right_shoulder']
 
             for point_name in key_points:
                 if point_name in pose_keypoints:
                     kp = pose_keypoints[point_name]
-                    if is_keypoint_visible(kp):
-                        # Color code different body parts
+                    if is_keypoint_visible(kp): 
                         if 'wrist' in point_name:
-                            color = (0, 255, 0)  # Green for wrists
+                            color = (0, 255, 0) 
                             radius = 6
                         elif 'elbow' in point_name:
-                            color = (0, 165, 255)  # Orange for elbows
+                            color = (0, 165, 255) 
                             radius = 5
                         else:  # shoulders
-                            color = (255, 0, 0)  # Red for shoulders
+                            color = (255, 0, 0) 
                             radius = 4
 
-                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius, color, -1)  # Filled circle
-                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius + 2, (255, 255, 255), 2)  # White outline
+                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius, color, -1) 
+                        cv2.circle(frame, (int(kp['x']), int(kp['y'])), radius + 2, (255, 255, 255), 2) 
 
     async def get_model_info(self) -> Dict[str, Any]:
         """Get model information."""
