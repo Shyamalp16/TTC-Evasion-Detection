@@ -37,12 +37,10 @@ class EdgeDevice:
         self._cleanup_interval = 5.0  
         self._pose_cooldown_per_person: Dict[int, float] = {}  
         self._pose_estimation_interval = 0.1
-        self._last_waitkey_call = 0.0
-        self._waitkey_interval = 0.033  # 30 FPS throttle for UI responsiveness  
-        
+    
     async def initialize(self) -> bool:
         """Initialize all components."""
-        logger.info("Initializing edge device...")
+        # logger.info("Initializing edge device...")
         
         # Initialize camera handler
         if not await self.camera_handler.initialize_cameras():
@@ -65,7 +63,7 @@ class EdgeDevice:
     
     async def run_detection_loop(self):
         """Main detection loop."""
-        logger.info("Starting detection loop...")
+        # logger.info("Starting detection loop...")
         self.is_running = True
         
         while self.is_running:
@@ -86,6 +84,13 @@ class EdgeDevice:
                 if now - self._last_preview_update >= self._preview_update_interval:
                     self._update_preview(frames)
                     self._last_preview_update = now
+                    
+                    # Handle key press (must be in same context as imshow)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        logger.info("'q' key pressed - initiating shutdown")
+                        self.is_running = False
+                        break
 
                 # Schedule detection work based on frame skip and detection interval
                 now = time.time()
@@ -100,14 +105,6 @@ class EdgeDevice:
                         self._detection_task = asyncio.create_task(self._process_frames(frames))
 
                 self.frame_count += 1
-
-                # Handle preview keypress (press 'q' to quit) - throttled to 30 FPS
-                now = time.time()
-                if (now - self._last_waitkey_call) >= self._waitkey_interval:
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        self.is_running = False
-                        break
-                    self._last_waitkey_call = now
 
                 # Small delay primarily for UI pacing
                 await asyncio.sleep(settings.preview_interval)
@@ -364,6 +361,10 @@ class EdgeDevice:
         logger.info("Shutting down edge device...")
         self.is_running = False
         
+        # Shutdown detection engine and its executors
+        self.detection_engine.shutdown()
+        
+        # Release cameras and shutdown camera executor
         self.camera_handler.release_cameras()
         
         await self.server_client.close()
@@ -414,7 +415,7 @@ async def main():
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     )
     
-    logger.info("Starting SnitchSystem Edge Device")
+    # logger.info("Starting SnitchSystem Edge Device")
     
     edge_device = EdgeDevice()
     
@@ -426,7 +427,8 @@ async def main():
         await edge_device.run_detection_loop()
         
     except KeyboardInterrupt:
-        logger.info("Received shutdown signal")
+        pass
+        # logger.info("Received shutdown signal")
         
     except Exception as e:
         logger.error(f"Unexpected error: {e}")

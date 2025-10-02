@@ -2,10 +2,12 @@
 YOLO detection engine for person detection, tracking, and pose estimation.
 Uses YOLO's built-in tracking (BoT-SORT/ByteTrack) instead of external trackers.
 """
+import asyncio
 import cv2
 import numpy as np
 import yaml
 import os
+from concurrent.futures import ThreadPoolExecutor
 from ultralytics import YOLO
 from typing import List, Tuple, Dict, Any, Optional
 from loguru import logger
@@ -27,6 +29,8 @@ class YOLOPoseEstimator:
         """Initialize YOLO pose model."""
         self.model = None
         self.is_initialized = False
+        # Thread pool executor for async pose inference
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose_inference")
         # YOLO keypoint mapping (COCO format)
         self.keypoint_names = [
             'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
@@ -46,6 +50,12 @@ class YOLOPoseEstimator:
         except Exception as e:
             logger.error(f"Failed to load YOLO pose model: {e}")
             return False
+    
+    def shutdown(self):
+        """Cleanup resources."""
+        if self._executor:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            logger.info("Pose estimator executor shutdown complete")
 
     def infer_pose(self, image: np.ndarray, bbox: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -298,6 +308,9 @@ class DetectionEngine:
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
         
+        # Thread pool executor for async inference (CPU-bound operations)
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yolo_inference")
+        
         # Load ROI configuration first (needed for gate monitor)
         self.validator_roi = None
         self.gate_line = None
@@ -461,18 +474,15 @@ class DetectionEngine:
             logger.error(f"Detection failed: {e}")
             return []
     
-    async def detect_multiple_frames(self, frames: List[Tuple[int, np.ndarray]]) -> Tuple[Dict[int, List[Dict[str, Any]]], List[int]]:
+    def _detect_and_track_frame_blocking(self, camera_id: int, frame: np.ndarray) -> Tuple[int, List[Dict[str, Any]], List[int]]:
         """
-        Detect and track persons in multiple frames using YOLO's built-in tracker.
-        Returns: (detection_results, crossed_person_ids)
+        Blocking detection and tracking operation (runs in executor).
+        Returns: (camera_id, detections, crossed_person_ids)
         """
-        results = {}
-        all_crossed_person_ids = []
-
-        for camera_id, frame in frames:
-            # Use YOLO's built-in tracking instead of separate detection + tracking
-            # This is more efficient and provides better tracking consistency
-            
+        detections = []
+        crossed_person_ids = []
+        
+        try:
             # Initialize tracker for this camera if not already done
             if camera_id not in self._camera_tracker_initialized:
                 logger.info(
@@ -503,11 +513,9 @@ class DetectionEngine:
                 )
                 
                 if not track_results or len(track_results) == 0:
-                    results[camera_id] = []
-                    continue
+                    return camera_id, detections, crossed_person_ids
                 
                 result = track_results[0]
-                detections = []
                 scale = 1.0 / self.downscale_ratio if self.downscale_ratio != 0 else 1.0
                 frame_height = frame.shape[0]
                 
@@ -556,18 +564,46 @@ class DetectionEngine:
                         detections.append(detection)
                 
                 # Monitor gate crossings using YOLO-assigned track IDs
-                crossed_person_ids = []
                 if self.gate_monitor and detections:
                     frame_height, frame_width = frame.shape[:2]
                     detections, crossed_person_ids = self.gate_monitor.update(detections, frame_height, frame_width)
-                    all_crossed_person_ids.extend(crossed_person_ids)
-                
-                results[camera_id] = detections
                 
             except Exception as e:
                 logger.error(f"YOLO tracking failed for camera {camera_id}: {e}")
-                results[camera_id] = []
-
+                
+        except Exception as e:
+            logger.error(f"Error in detection and tracking for camera {camera_id}: {e}")
+        
+        return camera_id, detections, crossed_person_ids
+    
+    async def detect_multiple_frames(self, frames: List[Tuple[int, np.ndarray]]) -> Tuple[Dict[int, List[Dict[str, Any]]], List[int]]:
+        """
+        Detect and track persons in multiple frames using YOLO's built-in tracker (async).
+        Returns: (detection_results, crossed_person_ids)
+        """
+        results = {}
+        all_crossed_person_ids = []
+        
+        # Process frames in parallel using executor
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(self._executor, self._detect_and_track_frame_blocking, camera_id, frame)
+            for camera_id, frame in frames
+        ]
+        
+        # Wait for all detection tasks to complete
+        detection_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Aggregate results
+        for result in detection_results:
+            if isinstance(result, Exception):
+                logger.error(f"Detection task failed: {result}")
+                continue
+            
+            camera_id, detections, crossed_person_ids = result
+            results[camera_id] = detections
+            all_crossed_person_ids.extend(crossed_person_ids)
+        
         return results, all_crossed_person_ids
     
     def draw_detections(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
@@ -691,3 +727,12 @@ class DetectionEngine:
             "classes": len(self.model.names),
             "class_names": list(self.model.names.values())
         }
+    
+    def shutdown(self):
+        """Cleanup resources."""
+        if self._executor:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            logger.info("Detection engine executor shutdown complete")
+        
+        if self.pose_estimator:
+            self.pose_estimator.shutdown()

@@ -4,6 +4,7 @@ Camera handling module for RTSP streams.
 import os
 import cv2
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Union
 from loguru import logger
 from config import settings
@@ -16,6 +17,7 @@ class CameraHandler:
         self.camera_urls = camera_urls
         self.cameras = []
         self.is_running = False
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="camera_reader")
         
     async def initialize_cameras(self) -> bool:
         """Initialize camera connections."""
@@ -81,8 +83,8 @@ class CameraHandler:
             logger.error(f"Camera initialization failed: {e}")
             return False
     
-    async def read_frame(self, camera_index: int) -> Optional[Tuple[int, any]]:
-        """Read frame from specified camera."""
+    def _read_frame_blocking(self, camera_index: int) -> Optional[Tuple[int, any]]:
+        """Blocking frame read operation (runs in executor)."""
         if camera_index >= len(self.cameras):
             return None
 
@@ -90,10 +92,21 @@ class CameraHandler:
         ret, frame = cap.read()
         
         if not ret or frame is None:
-            logger.warning(f"Failed to read frame from camera {camera_index}")
             return None
             
         return camera_index, frame
+    
+    async def read_frame(self, camera_index: int) -> Optional[Tuple[int, any]]:
+        """Read frame from specified camera asynchronously."""
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(self._executor, self._read_frame_blocking, camera_index)
+            if result is None:
+                logger.warning(f"Failed to read frame from camera {camera_index}")
+            return result
+        except Exception as e:
+            logger.error(f"Error reading frame from camera {camera_index}: {e}")
+            return None
     
     async def read_all_frames(self) -> list:
         """Read frames from all cameras."""
@@ -121,6 +134,11 @@ class CameraHandler:
                 pass
             logger.info(f"Camera {i} released")
         self.cameras.clear()
+        
+        # Shutdown the executor
+        if self._executor:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            logger.info("Camera executor shutdown complete")
     
     async def health_check(self) -> dict:
         """Check camera health status."""
