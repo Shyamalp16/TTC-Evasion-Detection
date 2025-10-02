@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     server_api_key: str = "your-api-key-here"
     server_timeout: int = 30
     
-    frame_skip: int = 2  # Process every 5th frame (dev: smoother UI)
+    frame_skip: int = 2  
     max_queue_size: int = 100
     detection_interval: float = 0.2
     preview_interval: float = 0.01
