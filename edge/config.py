@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     server_timeout: int = 30
     
     # Processing Settings
-    frame_skip: int = 5  # Process every 5th frame (dev: smoother UI)
+    frame_skip: int = 1  # Process every 5th frame (dev: smoother UI)
     max_queue_size: int = 100
     detection_interval: float = 0.15  # seconds
     preview_interval: float = 0.03  # seconds between UI updates (~33 FPS)
@@ -67,15 +67,10 @@ class Settings(BaseSettings):
     person_exit_edge_frames: int = 5  # Frames at edge before considering person exited (increased from 3 for stability)
     person_exit_margin: int = 30  # Pixels outside frame to immediately consider as exited
 
-    # Pose/Gesture Settings
-    # Backend: "mediapipe" only (movenet removed)
-    pose_backend: str = "mediapipe"
-    pose_score_threshold: float = 0.3
-
-    # MediaPipe Pose parameters
-    mediapipe_model_complexity: int = 1
-    mediapipe_min_detection_confidence: float = 0.5
-    mediapipe_min_tracking_confidence: float = 0.5
+    # YOLO Pose model: yolo11n-pose, yolo11s-pose, yolo11m-pose, yolo11l-pose, yolo11x-pose
+    # yolo11m-pose (balanced) or yolo11l-pose (high accuracy)
+    yolo_pose_model_path: str = "yolo11m-pose.pt"  # or "yolo11l-pose.pt" for higher accuracy
+    pose_confidence_threshold: float = 0.5  # Minimum confidence for pose keypoints
 
     # Gesture detection parameters (used by tap gesture)
     gesture_chest_tolerance_px: int = 40

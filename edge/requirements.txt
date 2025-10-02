@@ -3,12 +3,11 @@
 
 # Core AI and Computer Vision
 opencv-python
-ultralytics
+ultralytics>=8.3.0  # Required for YOLO11 pose models
 torch
 torchvision
 numpy
 Pillow
-mediapipe
 pydantic-settings
 
 # Camera and Video Processing

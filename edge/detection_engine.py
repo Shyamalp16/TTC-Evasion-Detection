@@ -1,5 +1,5 @@
 """
-YOLO detection engine for person detection.
+YOLO detection engine for person detection and pose estimation.
 """
 import cv2
 import numpy as np
@@ -11,91 +11,106 @@ from loguru import logger
 from config import settings
 from ocsort import OCSortTracker, iou as iou_calc
 from roi import point_in_roi, crosses_line
-import mediapipe as mp
 
 
-class PoseEstimator:
-    """MediaPipe-based pose estimation for person tracking."""
+class YOLOPoseEstimator:
+    """YOLO11-based pose estimation for person tracking.
+    
+    Uses YOLO11-pose models which provide 17 keypoints:
+    0: Nose, 1: Left Eye, 2: Right Eye, 3: Left Ear, 4: Right Ear
+    5: Left Shoulder, 6: Right Shoulder, 7: Left Elbow, 8: Right Elbow
+    9: Left Wrist, 10: Right Wrist, 11: Left Hip, 12: Right Hip
+    13: Left Knee, 14: Right Knee, 15: Left Ankle, 16: Right Ankle
+    """
 
     def __init__(self):
-        # Use static image mode for better per-frame detection
-        self.pose = mp.solutions.pose.Pose(
-            static_image_mode=True,  # Better for individual detections
-            model_complexity=settings.mediapipe_model_complexity,
-            min_detection_confidence=settings.mediapipe_min_detection_confidence,
-            min_tracking_confidence=settings.mediapipe_min_tracking_confidence,
-            enable_segmentation=False,  # Faster without segmentation
-            smooth_landmarks=False  # Not needed for static images
-        )
-        self.mp_pose = mp.solutions.pose
-        self.mp_drawing = mp.solutions.drawing_utils
-        logger.info("PoseEstimator initialized with static_image_mode=True for robust detection")
+        """Initialize YOLO pose model."""
+        self.model = None
+        self.is_initialized = False
+        # YOLO keypoint mapping (COCO format)
+        self.keypoint_names = [
+            'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+            'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+            'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+            'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+        ]
+        logger.info(f"Initializing YOLO pose estimator with model: {settings.yolo_pose_model_path}")
 
-    def infer_pose(self, image: np.ndarray) -> Optional[Dict[str, Any]]:
+    def initialize(self) -> bool:
+        """Load YOLO pose model."""
+        try:
+            self.model = YOLO(settings.yolo_pose_model_path)
+            self.is_initialized = True
+            logger.info(f"YOLO pose model loaded: {settings.yolo_pose_model_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load YOLO pose model: {e}")
+            return False
+
+    def infer_pose(self, image: np.ndarray, bbox: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
         """
-        Run pose estimation on an image.
+        Run pose estimation on an image or cropped person region.
 
         Args:
-            image: RGB image array
+            image: BGR image array (full frame or cropped person)
+            bbox: Optional bounding box [x1, y1, x2, y2] if image is full frame
 
         Returns:
             Dictionary with pose keypoints or None if no pose detected
+            Format: {'keypoints': {name: {'x': int, 'y': int, 'z': float, 'visibility': float}}}
         """
         try:
-            # Validate input
+            if not self.is_initialized:
+                logger.warning("YOLO pose model not initialized")
+                return None
+
             if image is None or image.size == 0:
-                logger.debug("Pose estimation: Empty or None image")
+                return None
+
+            # Run YOLO pose inference
+            results = self.model(image, conf=settings.pose_confidence_threshold, verbose=False)
+            
+            if not results or len(results) == 0:
+                return None
+
+            result = results[0]
+            
+            # Check if keypoints are available
+            if result.keypoints is None or result.keypoints.data is None:
                 return None
             
-            # Convert to RGB if needed
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            else:
-                rgb_image = image
-
-            # Run pose estimation
-            results = self.pose.process(rgb_image)
-
-            if results.pose_landmarks:
-                keypoints = {}
-                h, w = image.shape[:2]
-
-                # Extract key landmarks (wrists, elbows, shoulders)
-                landmark_indices = {
-                    'nose': 0,
-                    'left_shoulder': 11,
-                    'right_shoulder': 12,
-                    'left_elbow': 13,
-                    'right_elbow': 14,
-                    'left_wrist': 15,
-                    'right_wrist': 16,
-                    'left_hip': 23,
-                    'right_hip': 24,
-                    'left_knee': 25,
-                    'right_knee': 26,
-                    'left_ankle': 27,
-                    'right_ankle': 28
+            keypoints_data = result.keypoints.data
+            
+            if len(keypoints_data) == 0:
+                return None
+            
+            # Use the first person detected (highest confidence)
+            kpts = keypoints_data[0].cpu().numpy()  # Shape: (17, 3) -> [x, y, confidence]
+            
+            if len(kpts) < 17:
+                return None
+            
+            # Convert to our expected format
+            keypoints = {}
+            h, w = image.shape[:2]
+            
+            for idx, name in enumerate(self.keypoint_names):
+                x, y, conf = kpts[idx]
+                keypoints[name] = {
+                    'x': int(x),
+                    'y': int(y),
+                    'z': 0.0,  # YOLO doesn't provide depth
+                    'visibility': float(conf)
                 }
-
-                for name, idx in landmark_indices.items():
-                    landmark = results.pose_landmarks.landmark[idx]
-                    keypoints[name] = {
-                        'x': int(landmark.x * w),
-                        'y': int(landmark.y * h),
-                        'z': landmark.z,
-                        'visibility': landmark.visibility
-                    }
-
-                return {
-                    'keypoints': keypoints,
-                    'landmarks': results.pose_landmarks,
-                    'timestamp': None
-                }
+            
+            return {
+                'keypoints': keypoints,
+                'timestamp': None
+            }
 
         except Exception as e:
-            logger.debug(f"Pose estimation failed: {e}")
-
-        return None
+            logger.debug(f"YOLO pose estimation failed: {e}")
+            return None
 
 
 class TrackedPerson:
@@ -295,10 +310,10 @@ class DetectionEngine:
 
         # Initialize pose estimator
         try:
-            self.pose_estimator = PoseEstimator()
-            logger.info("MediaPipe pose estimator initialized successfully")
+            self.pose_estimator = YOLOPoseEstimator()
+            logger.info("YOLO pose estimator created (will initialize with detection engine)")
         except Exception as e:
-            logger.error(f"Failed to initialize MediaPipe pose estimator: {e}")
+            logger.error(f"Failed to create YOLO pose estimator: {e}")
             self.pose_estimator = None
 
     def _load_roi_config(self):
@@ -322,13 +337,20 @@ class DetectionEngine:
             logger.error(f"Failed to load ROI config: {e}")
 
     async def initialize(self) -> bool:
-        """Initialize YOLO model."""
+        """Initialize YOLO model and pose estimator."""
         try:
-            # Load YOLOv8-tiny model
+            # Load YOLOv8 detection model
             self.model = YOLO(settings.yolo_model_path)
             self.is_initialized = True
             self._compute_focal_length_pixels()
-            logger.info("YOLO model initialized successfully")
+            logger.info("YOLO detection model initialized successfully")
+            
+            # Initialize pose estimator
+            if self.pose_estimator and not self.pose_estimator.is_initialized:
+                if not self.pose_estimator.initialize():
+                    logger.error("Failed to initialize YOLO pose estimator")
+                    self.pose_estimator = None
+            
             return True
             
         except Exception as e:
