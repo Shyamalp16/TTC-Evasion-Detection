@@ -19,7 +19,8 @@ class Settings(BaseSettings):
         # "0",  # Laptop webcam index 0
         # "1",  # Uncomment if you have a second webcam
         # "rtsp://admin:admin@10.0.0.231:8554/live",
-        "rtsp://Shyamalp16:Shyamalp16@10.0.0.242:554/stream2",
+        0,
+        # "rtsp://Shyamalp16:Shyamalp16@10.0.0.242:554/stream2",
         # "rtsp://admin:password@192.168.1.101:554/stream1"
     ]
     primary_camera_id: int = 0  # Primary camera for snapshots and events
@@ -34,7 +35,8 @@ class Settings(BaseSettings):
     detection_confidence: float = 0.5
     detection_iou_threshold: float = 0.45
     detection_classes: List[int] = [0]  # Person class in COCO dataset
-    yolo_model_path: str = "yolov8m.pt"  # Heavier model for better long-range accuracy
+    # yolo_model_path: str = "yolov8m.pt"  # Heavier model for better long-range accuracy
+    yolo_model_path: str = "yolo11m.pt"  # Heavier model for better long-range accuracy
     detection_downscale_ratio: float = 1.0  # Keep full resolution so distant subjects stay visible
     reference_person_height_m: float = 1.7  # Average adult height for depth estimation
     camera_focal_length_mm: float = 3.6  # Typical webcam focal length

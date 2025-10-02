@@ -66,7 +66,6 @@ class EdgeDevice:
                 frames = await self.camera_handler.read_all_frames()
                 
                 if not frames:
-                    # Throttle warnings to avoid UI lag
                     now = time.time()
                     if now - self._last_debug_log > 2.0:
                         logger.warning("No frames received from cameras")
@@ -123,8 +122,6 @@ class EdgeDevice:
                 if detections is not None:
                     self._last_detections[camera_id] = detections
 
-
-
             # Update track state and run pose estimation for all detections
             for camera_id, detections in detection_results.items():
                 frame = frame_lookup.get(camera_id)
@@ -164,7 +161,6 @@ class EdgeDevice:
                         pose_result = self.detection_engine.pose_estimator.infer_pose(cropped_person)
                         
                         if pose_result and 'keypoints' in pose_result:
-                            # Adjust keypoints back to full frame coordinates
                             adjusted_keypoints = {}
                             for name, kp in pose_result['keypoints'].items():
                                 adjusted_keypoints[name] = {
@@ -174,22 +170,18 @@ class EdgeDevice:
                                     'visibility': kp['visibility']
                                 }
 
-                            # CRITICAL FIX: Attach pose directly to detection
                             detection["pose_keypoints"] = adjusted_keypoints
 
                     except Exception as e:
                         logger.debug(f"Person {person_id}: Pose estimation error - {type(e).__name__}")
                     
-                    # Now update track with ROI information (pose keypoints are already attached)
                     validator_roi = self.detection_engine.validator_roi
                     if validator_roi:
                         self.rules.update_track(frame, detection, tuple(validator_roi))
 
-            # Handle gate crossings and create appropriate events
             if crossed_person_ids:
                 logger.info(f"🚪 Gate Crossing: {len(crossed_person_ids)} person(s) crossed the gate line")
 
-                # Validate each crossing using tap detection
                 evasion_crossings = []
                 normal_crossings = []
 
@@ -204,7 +196,6 @@ class EdgeDevice:
                                 if person_id in monitor.tracked_persons:
                                     person = monitor.tracked_persons[person_id]
                                     
-                                    # Only process down->up crossings (entering)
                                     if person.crossing_direction == "up":
                                         # Validate if person tapped in validator ROI
                                         crossing_result = self.rules.on_crossing(person_id)
@@ -239,9 +230,6 @@ class EdgeDevice:
                                                 )
                                             
                                             evasion_crossings.append(detection)
-                                    
-                                    # Ignore up->down crossings (person exiting - no validation needed)
-
                 # Create detection events for normal crossings
                 if normal_crossings:
                     await self.event_processor.add_detection_event(
@@ -258,11 +246,9 @@ class EdgeDevice:
                     current_time = time.time()
                     camera_id = settings.primary_camera_id
 
-                    # Capture snapshot from the primary camera frame for evasion events only
                     snapshot_data = None
                     primary_frame = frame_lookup.get(camera_id)
                     if primary_frame is not None:
-                        # Encode frame as JPEG
                         success, encoded_image = cv2.imencode('.jpg', primary_frame)
                         if success:
                             snapshot_data = encoded_image.tobytes()
@@ -270,17 +256,16 @@ class EdgeDevice:
                         else:
                             logger.warning("Failed to encode evasion snapshot")
 
-                    # Send evasion event directly to server (following EventCreate schema)
                     simple_evasion_data = {
                         "gate_id": settings.gate_id,
                         "station_id": settings.station_id,
                         "event_type": "evasion",
-                        "timestamp": current_time,  # Unix timestamp (server handles conversion)
+                        "timestamp": current_time,
                         "camera_id": camera_id,
                         "evasion_confidence": 1.0,
                         "num_detections": len(evasion_crossings),
                         "event_metadata": {
-                            "detections": evasion_crossings,  # Put detections in metadata
+                            "detections": evasion_crossings, 
                             "confidence_scores": [d.get("confidence", 0) for d in evasion_crossings],
                             "crossing_direction": "down_to_up_no_tap",
                             "detection_method": "computer_vision_tap_validation",
@@ -299,10 +284,7 @@ class EdgeDevice:
                         detections=evasion_crossings
                     )
 
-            # Periodically cleanup old tracks from rules engine
             self.rules.cleanup_old_tracks()
-
-            # Check for batched detections to send
             await self._send_batched_detections()
             
         except Exception as e:
@@ -313,7 +295,6 @@ class EdgeDevice:
         for camera_id, frame in frames:
             detections = self._last_detections.get(camera_id) or []
             try:
-                # Always draw detections (which includes ROIs) even with empty detections list
                 annotated = self.detection_engine.draw_detections(frame, detections)
                 cv2.imshow(f"Camera {camera_id}", annotated)
             except Exception:
@@ -324,7 +305,6 @@ class EdgeDevice:
         try:
             batch = await self.event_processor.get_pending_detections_batch()
             if batch:
-                # Send batch as single request
                 asyncio.create_task(
                     self.server_client.send_detection_batch(batch)
                 )
@@ -342,19 +322,15 @@ class EdgeDevice:
             "frame_count": self.frame_count
         }
         
-        # Camera health
         camera_health = await self.camera_handler.health_check()
         health_status["cameras"] = camera_health
         
-        # Detection engine health
         model_info = await self.detection_engine.get_model_info()
         health_status["detection_engine"] = model_info
         
-        # Event processor statistics
         event_stats = await self.event_processor.get_statistics()
         health_status["event_processor"] = event_stats
         
-        # Server connectivity
         server_health = await self.server_client.health_check()
         health_status["server"] = server_health
         
@@ -365,13 +341,10 @@ class EdgeDevice:
         logger.info("Shutting down edge device...")
         self.is_running = False
         
-        # Release camera resources
         self.camera_handler.release_cameras()
         
-        # Close server client
         await self.server_client.close()
         
-        # Close preview windows if any
         try:
             cv2.destroyAllWindows()
         except Exception:
@@ -427,7 +400,6 @@ async def main():
         return
     
     try:
-        # Start detection loop
         await edge_device.run_detection_loop()
         
     except KeyboardInterrupt:

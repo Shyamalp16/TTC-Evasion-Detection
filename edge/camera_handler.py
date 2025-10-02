@@ -88,8 +88,6 @@ class CameraHandler:
             
         cap = self.cameras[camera_index]
         
-        # Flush buffer: grab multiple times to get the latest frame for RTSP streams
-        # This prevents lag by discarding old buffered frames
         for _ in range(5):
             cap.grab()
         
