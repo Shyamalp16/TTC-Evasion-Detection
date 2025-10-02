@@ -33,11 +33,4 @@ psutil
 pytest
 pytest-asyncio
 
-# Multi-Object Tracking (OC-SORT runtime)
-# OC-SORT relies on a Kalman filter and assignment via SciPy
-filterpy
 scipy
-
-# Optional performance/evaluation extras (uncomment if needed)
-# lapx        # faster assignment solver (Numba-based)
-# motmetrics  # evaluation metrics for MOT benchmarks

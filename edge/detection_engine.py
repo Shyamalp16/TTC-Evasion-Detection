@@ -1,5 +1,6 @@
 """
-YOLO detection engine for person detection and pose estimation.
+YOLO detection engine for person detection, tracking, and pose estimation.
+Uses YOLO's built-in tracking (BoT-SORT/ByteTrack) instead of external trackers.
 """
 import cv2
 import numpy as np
@@ -9,7 +10,6 @@ from ultralytics import YOLO
 from typing import List, Tuple, Dict, Any, Optional
 from loguru import logger
 from config import settings
-from ocsort import OCSortTracker, iou as iou_calc
 from roi import point_in_roi, crosses_line
 
 
@@ -235,7 +235,7 @@ class TrackedPerson:
 class GateCrossingMonitor:
     """
     Monitors gate crossings and frame exits for tracked persons.
-    Does NOT assign IDs - uses IDs from OC-SORT tracker.
+    Uses IDs from YOLO's built-in tracker (BoT-SORT/ByteTrack).
     """
 
     def __init__(self, gate_line: Optional[List[int]] = None):
@@ -251,7 +251,7 @@ class GateCrossingMonitor:
 
     def update(self, detections: List[Dict[str, Any]], frame_height: int, frame_width: int) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
-        Update crossing state for detections (IDs already assigned by OC-SORT).
+        Update crossing state for detections (IDs already assigned by YOLO tracker).
         Returns: (detections, crossed_person_ids)
         """
         crossed_person_ids = []
@@ -263,9 +263,9 @@ class GateCrossingMonitor:
                 
             bbox = detection["bbox"]
             
-            # Get or create tracked person (using ID from OC-SORT)
+            # Get or create tracked person (using ID from YOLO tracker)
             if person_id not in self.tracked_persons:
-                # New person from OC-SORT - create tracking state with gate line position
+                # New person from YOLO tracker - create tracking state with gate line position
                 self.tracked_persons[person_id] = TrackedPerson(
                     person_id, bbox, frame_height, frame_width, gate_line_y=self.gate_line_y
                 )
@@ -290,23 +290,25 @@ class GateCrossingMonitor:
 
 
 class DetectionEngine:
-    """YOLO-based person detection engine."""
+    """YOLO-based person detection, tracking, and pose estimation engine."""
     
     def __init__(self):
         self.model = None
         self.is_initialized = False
         self.downscale_ratio = settings.detection_downscale_ratio
         self._focal_pixels = None
+        
         # Load ROI configuration first (needed for gate monitor)
         self.validator_roi = None
         self.gate_line = None
         self._load_roi_config()
         
-        # Gate crossing monitor - tracks crossing state using IDs from OC-SORT
+        # Gate crossing monitor - tracks crossing state using IDs from YOLO tracker
         self.gate_monitor = GateCrossingMonitor(gate_line=self.gate_line) if settings.enable_gate_crossing else None
         
-        # OC-SORT trackers per camera for stable ID assignment
-        self.ocsort_trackers: Dict[int, OCSortTracker] = {}
+        # YOLO tracking state per camera
+        # YOLO tracker maintains state internally, we just need to track camera IDs
+        self._camera_tracker_initialized: Dict[int, bool] = {}
 
         # Initialize pose estimator
         try:
@@ -461,90 +463,111 @@ class DetectionEngine:
     
     async def detect_multiple_frames(self, frames: List[Tuple[int, np.ndarray]]) -> Tuple[Dict[int, List[Dict[str, Any]]], List[int]]:
         """
-        Detect persons in multiple frames from different cameras.
+        Detect and track persons in multiple frames using YOLO's built-in tracker.
         Returns: (detection_results, crossed_person_ids)
         """
         results = {}
         all_crossed_person_ids = []
 
         for camera_id, frame in frames:
-            detections = await self.detect_persons(frame)
-
-            # OC-SORT: assign track IDs for this camera's detections
-            if detections:
-                det_array = np.array([d["bbox"] for d in detections], dtype=float)
-            else:
-                det_array = np.empty((0, 4), dtype=float)
-
-            # Get tracker for this camera
-            tracker = self.ocsort_trackers.get(camera_id)
-            if tracker is None:
-                # CRITICAL: Keep tracks alive as long as person is in frame
-                # max_age set very high - we'll manually clean up when person exits frame
-                tracker = OCSortTracker(
-                    max_age=300,     # Keep tracks alive for 300 frames (~10 seconds) - only forget if truly lost
-                    min_hits=1,      # Assign ID immediately
-                    iou_threshold=0.05,  # Very permissive matching - prevents ID switches
-                )
-                self.ocsort_trackers[camera_id] = tracker
-                logger.info(f"Initialized OC-SORT tracker for camera {camera_id} with persistent params (max_age=300, min_hits=1, iou=0.05)")
-
-            tracked = tracker.update(det_array)
-            # Map from bbox to id with a tolerance using IoU to pair back to detection dicts
-            id_assigned = [False] * len(detections)
-            for trk_bbox, trk_id in tracked:
-                # Find best matching detection by IoU
-                best_idx = -1
-                best_iou = 0.0
-                for idx, det in enumerate(detections):
-                    if id_assigned[idx]:
-                        continue
-                    iou_val = iou_calc(np.array([int(v) for v in trk_bbox], dtype=float), np.array(det["bbox"], dtype=float))
-                    if iou_val > best_iou:
-                        best_iou = iou_val
-                        best_idx = idx
-                # More permissive matching threshold (was 0.1, now 0.05) for stable ID assignment
-                if best_idx >= 0 and best_iou >= 0.05:
-                    detections[best_idx]["person_id"] = int(trk_id)
-                    id_assigned[best_idx] = True
-
-            # Fallback: any unassigned detections get unique incremental IDs beyond current max
-            current_max_id = max([int(t[1]) for t in tracked], default=0)
-            next_id = current_max_id + 1
-            for idx, assigned in enumerate(id_assigned):
-                if not assigned and idx < len(detections):
-                    detections[idx]["person_id"] = int(next_id)
-                    logger.info(f"👤 New person detected - assigned ID {next_id}")
-                    next_id += 1
-
-            # Monitor gate crossings and frame exits (using IDs from OC-SORT)
-            crossed_person_ids = []
-            if self.gate_monitor:
-                frame_height, frame_width = frame.shape[:2]
-                detections, crossed_person_ids = self.gate_monitor.update(detections, frame_height, frame_width)
-                all_crossed_person_ids.extend(crossed_person_ids)
-                
-                # CRITICAL: Clean up OC-SORT tracks for persons who have exited the frame
-                # This ensures track IDs are only forgotten when person leaves, not based on time
-                exited_person_ids = []
-                for person_id, person in self.gate_monitor.tracked_persons.items():
-                    if person.exited_frame:
-                        exited_person_ids.append(person_id)
-                
-                # Force OC-SORT to forget these tracks by checking against active trackers
-                if exited_person_ids and hasattr(tracker, 'trackers'):
-                    to_remove_indices = []
-                    for idx, trk in enumerate(tracker.trackers):
-                        trk_id = int(trk.id)
-                        if trk_id in exited_person_ids:
-                            to_remove_indices.append(idx)
-                            logger.info(f"🚪 Person {trk_id} exited frame - releasing track ID")
-                    
-                    # Remove tracks in reverse order to avoid index issues
-                    for idx in sorted(to_remove_indices, reverse=True):
-                        del tracker.trackers[idx]
+            # Use YOLO's built-in tracking instead of separate detection + tracking
+            # This is more efficient and provides better tracking consistency
             
-            results[camera_id] = detections
+            # Initialize tracker for this camera if not already done
+            if camera_id not in self._camera_tracker_initialized:
+                logger.info(
+                    f"Initializing YOLO {settings.yolo_tracker} tracker for camera {camera_id} | "
+                    f"persist={settings.track_persist}, conf={settings.track_conf}, iou={settings.track_iou}"
+                )
+                self._camera_tracker_initialized[camera_id] = True
+            
+            # Run YOLO tracking (combines detection + tracking in one step)
+            try:
+                # Downscale for speed if needed
+                if self.downscale_ratio != 1.0:
+                    small_frame = cv2.resize(frame, None, fx=self.downscale_ratio, fy=self.downscale_ratio, 
+                                           interpolation=cv2.INTER_LINEAR)
+                else:
+                    small_frame = frame
+                
+                # Use YOLO's track() method instead of predict()
+                # This automatically handles tracking between frames
+                track_results = self.model.track(
+                    small_frame,
+                    conf=settings.track_conf,
+                    iou=settings.track_iou,
+                    classes=settings.detection_classes,  # Person class only
+                    persist=settings.track_persist,  # Persist tracks between frames
+                    tracker=settings.yolo_tracker,  # Use configured tracker (botsort/bytetrack)
+                    verbose=False
+                )
+                
+                if not track_results or len(track_results) == 0:
+                    results[camera_id] = []
+                    continue
+                
+                result = track_results[0]
+                detections = []
+                scale = 1.0 / self.downscale_ratio if self.downscale_ratio != 0 else 1.0
+                frame_height = frame.shape[0]
+                
+                # Extract tracking results
+                if result.boxes is not None and len(result.boxes) > 0:
+                    boxes = result.boxes
+                    
+                    for box in boxes:
+                        # Get bounding box
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        confidence = float(box.conf[0].cpu().numpy())
+                        class_id = int(box.cls[0].cpu().numpy())
+                        
+                        # Get track ID (this is provided by YOLO tracker)
+                        track_id = box.id
+                        if track_id is not None:
+                            person_id = int(track_id.cpu().numpy()[0])
+                        else:
+                            # Fallback: if no track ID, skip this detection
+                            logger.debug(f"Skipping detection without track ID")
+                            continue
+                        
+                        # Scale boxes back to original frame size
+                        x1, y1, x2, y2 = [int(v * scale) for v in [x1, y1, x2, y2]]
+                        bbox = [x1, y1, x2, y2]
+                        
+                        # Filter out implausible boxes
+                        w = max(1, bbox[2] - bbox[0])
+                        h = max(1, bbox[3] - bbox[1])
+                        aspect = w / h
+                        if aspect < 0.2 or aspect > 4.0:
+                            continue
+                        if w * h < 500:  # tiny boxes
+                            continue
+                        
+                        # Estimate distance
+                        distance = self._estimate_distance(bbox, frame_height)
+                        
+                        detection = {
+                            "bbox": bbox,
+                            "confidence": confidence,
+                            "class_id": class_id,
+                            "class_name": "person",
+                            "distance_m": distance,
+                            "person_id": person_id  # Track ID from YOLO tracker
+                        }
+                        detections.append(detection)
+                
+                # Monitor gate crossings using YOLO-assigned track IDs
+                crossed_person_ids = []
+                if self.gate_monitor and detections:
+                    frame_height, frame_width = frame.shape[:2]
+                    detections, crossed_person_ids = self.gate_monitor.update(detections, frame_height, frame_width)
+                    all_crossed_person_ids.extend(crossed_person_ids)
+                
+                results[camera_id] = detections
+                
+            except Exception as e:
+                logger.error(f"YOLO tracking failed for camera {camera_id}: {e}")
+                results[camera_id] = []
 
         return results, all_crossed_person_ids
     
