@@ -38,14 +38,14 @@ class YOLOPoseEstimator:
             'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
             'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
         ]
-        logger.info(f"Initializing YOLO pose estimator with model: {settings.yolo_pose_model_path}")
+        # logger.info(f"Initializing YOLO pose estimator with model: {settings.yolo_pose_model_path}")
 
     def initialize(self) -> bool:
         """Load YOLO pose model."""
         try:
             self.model = YOLO(settings.yolo_pose_model_path)
             self.is_initialized = True
-            logger.info(f"YOLO pose model loaded: {settings.yolo_pose_model_path}")
+            # logger.info(f"YOLO pose model loaded: {settings.yolo_pose_model_path}")
             return True
         except Exception as e:
             logger.error(f"Failed to load YOLO pose model: {e}")
@@ -55,7 +55,7 @@ class YOLOPoseEstimator:
         """Cleanup resources."""
         if self._executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
-            logger.info("Pose estimator executor shutdown complete")
+            # logger.info("Pose estimator executor shutdown complete")
 
     def infer_pose(self, image: np.ndarray, bbox: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
         """
@@ -257,7 +257,7 @@ class GateCrossingMonitor:
             y1, y2 = gate_line[1], gate_line[3]
             if y1 == y2:  # Horizontal line
                 self.gate_line_y = y1
-                logger.info(f"GateCrossingMonitor initialized with gate line at y={self.gate_line_y}px")
+                # logger.info(f"GateCrossingMonitor initialized with gate line at y={self.gate_line_y}px")
 
     def update(self, detections: List[Dict[str, Any]], frame_height: int, frame_width: int) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
@@ -323,10 +323,14 @@ class DetectionEngine:
         # YOLO tracker maintains state internally, we just need to track camera IDs
         self._camera_tracker_initialized: Dict[int, bool] = {}
 
+        # MEMORY OPTIMIZATION: Pre-allocated structures for detection results
+        self._detection_results: Dict[int, List[Dict[str, Any]]] = {}
+        self._all_crossed_ids: List[int] = []
+
         # Initialize pose estimator
         try:
             self.pose_estimator = YOLOPoseEstimator()
-            logger.info("YOLO pose estimator created (will initialize with detection engine)")
+            # logger.info("YOLO pose estimator created (will initialize with detection engine)")
         except Exception as e:
             logger.error(f"Failed to create YOLO pose estimator: {e}")
             self.pose_estimator = None
@@ -581,8 +585,9 @@ class DetectionEngine:
         Detect and track persons in multiple frames using YOLO's built-in tracker (async).
         Returns: (detection_results, crossed_person_ids)
         """
-        results = {}
-        all_crossed_person_ids = []
+        # MEMORY OPTIMIZATION: Reuse pre-allocated structures (clear instead of recreate)
+        self._detection_results.clear()
+        self._all_crossed_ids.clear()
         
         # Process frames in parallel using executor
         loop = asyncio.get_event_loop()
@@ -594,17 +599,17 @@ class DetectionEngine:
         # Wait for all detection tasks to complete
         detection_results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Aggregate results
+        # Aggregate results into pre-allocated structures
         for result in detection_results:
             if isinstance(result, Exception):
                 logger.error(f"Detection task failed: {result}")
                 continue
             
             camera_id, detections, crossed_person_ids = result
-            results[camera_id] = detections
-            all_crossed_person_ids.extend(crossed_person_ids)
+            self._detection_results[camera_id] = detections
+            self._all_crossed_ids.extend(crossed_person_ids)
         
-        return results, all_crossed_person_ids
+        return self._detection_results, self._all_crossed_ids
     
     def draw_detections(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
         """Draw detection bounding boxes on frame."""

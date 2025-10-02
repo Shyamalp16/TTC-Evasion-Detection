@@ -26,18 +26,23 @@ class EdgeDevice:
         self.rules = ValidatorAndGateRules(settings)
         self.is_running = False
         self.frame_count = 0
-        self._last_debug_log = 0.0
+        # Use monotonic time for intervals (not affected by system clock adjustments)
+        self._last_debug_log = time.monotonic()
         self._last_detections: Dict[int, List[Dict[str, Any]]] = {}
         self._detection_task: Optional[asyncio.Task] = None
         self._frame_skip = max(1, settings.frame_skip)
-        self._last_detection_trigger = 0.0
-        self._last_preview_update = 0.0
+        self._last_detection_trigger = time.monotonic()
+        self._last_preview_update = time.monotonic()
         self._preview_update_interval = 0.033 
-        self._last_cleanup = 0.0
+        self._last_cleanup = time.monotonic()
         self._cleanup_interval = 5.0  
         self._pose_cooldown_per_person: Dict[int, float] = {}  
         self._pose_estimation_interval = 0.1
-    
+        
+        self._frame_lookup: Dict[int, Any] = {}  
+        self._evasion_crossings: List[Dict[str, Any]] = []  
+        self._normal_crossings: List[Dict[str, Any]] = [] 
+
     async def initialize(self) -> bool:
         """Initialize all components."""
         # logger.info("Initializing edge device...")
@@ -58,7 +63,7 @@ class EdgeDevice:
             logger.error("Failed to initialize server client")
             return False
         
-        logger.info("Edge device initialized successfully")
+        # logger.info("Edge device initialized successfully")
         return True
     
     async def run_detection_loop(self):
@@ -68,39 +73,41 @@ class EdgeDevice:
         
         while self.is_running:
             try:
+                # OPTIMIZED: Cache monotonic time at loop start (single syscall)
+                loop_time = time.monotonic()
+                
                 # Read frames from all cameras
                 frames = await self.camera_handler.read_all_frames()
                 
                 if not frames:
-                    now = time.time()
-                    if now - self._last_debug_log > 2.0:
+                    if loop_time - self._last_debug_log > 2.0:
                         logger.warning("No frames received from cameras")
-                        self._last_debug_log = now
+                        self._last_debug_log = loop_time
                     await asyncio.sleep(0.1)
                     continue
                 
-                # OPTIMIZED: Throttle preview updates to ~30 FPS instead of every frame
-                now = time.time()
-                if now - self._last_preview_update >= self._preview_update_interval:
+                # OPTIMIZED: Batch time-based decisions using cached loop_time
+                should_update_preview = loop_time - self._last_preview_update >= self._preview_update_interval
+                should_run_detection = (
+                    self.frame_count % self._frame_skip == 0
+                    and (loop_time - self._last_detection_trigger) >= settings.detection_interval
+                )
+                
+                # Update preview and handle UI
+                if should_update_preview:
                     self._update_preview(frames)
-                    self._last_preview_update = now
+                    self._last_preview_update = loop_time
                     
                     # Handle key press (must be in same context as imshow)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord('q'):
-                        logger.info("'q' key pressed - initiating shutdown")
+                        # logger.info("'q' key pressed - initiating shutdown")
                         self.is_running = False
                         break
 
-                # Schedule detection work based on frame skip and detection interval
-                now = time.time()
-                should_run_detection = (
-                    self.frame_count % self._frame_skip == 0
-                    and (now - self._last_detection_trigger) >= settings.detection_interval
-                )
-
+                # Schedule detection work
                 if should_run_detection:
-                    self._last_detection_trigger = now
+                    self._last_detection_trigger = loop_time
                     if not self._detection_task or self._detection_task.done():
                         self._detection_task = asyncio.create_task(self._process_frames(frames))
 
@@ -125,18 +132,22 @@ class EdgeDevice:
             # Run detection on all frames
             detection_results, crossed_person_ids = await self.detection_engine.detect_multiple_frames(frames)
 
-            # Process each camera's detections
-            frame_lookup = {camera_id: frame for camera_id, frame in frames}
+            
+            self._frame_lookup.clear()
+            for camera_id, frame in frames:
+                self._frame_lookup[camera_id] = frame
 
-            for camera_id, frame in frame_lookup.items():
+            
+            for camera_id in self._frame_lookup:
                 detections = detection_results.get(camera_id)
                 if detections is not None:
                     self._last_detections[camera_id] = detections
 
-            # Update track state and run pose estimation for all detections
-            current_time = time.time()
+            # OPTIMIZED: Cache time values (monotonic for intervals, real for timestamps)
+            monotonic_time = time.monotonic()  # For cooldowns/intervals
+            current_time = time.time()  # For event timestamps only
             for camera_id, detections in detection_results.items():
-                frame = frame_lookup.get(camera_id)
+                frame = self._frame_lookup.get(camera_id)
                 if frame is None:
                     continue
                     
@@ -151,8 +162,8 @@ class EdgeDevice:
                     
                     # OPTIMIZED: Run pose estimation with cooldown per person (0.5s interval)
                     # This reduces CPU load significantly while maintaining detection accuracy
-                    last_pose_time = self._pose_cooldown_per_person.get(person_id, 0)
-                    should_run_pose = (current_time - last_pose_time) >= self._pose_estimation_interval
+                    last_pose_time = self._pose_cooldown_per_person.get(person_id, 0.0)
+                    should_run_pose = (monotonic_time - last_pose_time) >= self._pose_estimation_interval
                     
                     if should_run_pose:
                         try:
@@ -186,7 +197,7 @@ class EdgeDevice:
                                     }
 
                                 detection["pose_keypoints"] = adjusted_keypoints
-                                self._pose_cooldown_per_person[person_id] = current_time
+                                self._pose_cooldown_per_person[person_id] = monotonic_time
 
                         except Exception as e:
                             pass 
@@ -198,8 +209,9 @@ class EdgeDevice:
             if crossed_person_ids:
                 logger.info(f"🚪 Gate Crossing: {len(crossed_person_ids)} person(s) crossed the gate line")
 
-                evasion_crossings = []
-                normal_crossings = []
+                
+                self._evasion_crossings.clear()
+                self._normal_crossings.clear()
 
                 # Check each crossed person and validate with tap gesture
                 for camera_id, detections in detection_results.items():
@@ -229,7 +241,7 @@ class EdgeDevice:
                                                 f"Tap confirmed {tap_age:.2f}s ago | "
                                                 f"Crossing #{crossing_count} | Access granted"
                                             )
-                                            normal_crossings.append(detection)
+                                            self._normal_crossings.append(detection)
                                         else:
                                             # Evasion - person did NOT tap or tap invalid
                                             logger.warning(
@@ -245,17 +257,17 @@ class EdgeDevice:
                                                     f"🚨 Person {person_id} FRAUD DETECTED: {fraud_indicators}"
                                                 )
                                             
-                                            evasion_crossings.append(detection)
+                                            self._evasion_crossings.append(detection)
                 # Create detection events for normal crossings
-                if normal_crossings:
+                if self._normal_crossings:
                     await self.event_processor.add_detection_event(
                         camera_id=settings.primary_camera_id,
-                        detections=normal_crossings
+                        detections=self._normal_crossings
                     )
 
                 # Create evasion events for crossings without tap validation
-                if evasion_crossings:
-                    logger.warning(f"Detected {len(evasion_crossings)} potential fare evasions (no tap detected)")
+                if self._evasion_crossings:
+                    logger.warning(f"Detected {len(self._evasion_crossings)} potential fare evasions (no tap detected)")
 
                     import cv2
 
@@ -263,7 +275,7 @@ class EdgeDevice:
                     camera_id = settings.primary_camera_id
 
                     snapshot_data = None
-                    primary_frame = frame_lookup.get(camera_id)
+                    primary_frame = self._frame_lookup.get(camera_id)
                     if primary_frame is not None:
                         success, encoded_image = cv2.imencode('.jpg', primary_frame)
                         if success:
@@ -279,10 +291,10 @@ class EdgeDevice:
                         "timestamp": current_time,
                         "camera_id": camera_id,
                         "evasion_confidence": 1.0,
-                        "num_detections": len(evasion_crossings),
+                        "num_detections": len(self._evasion_crossings),
                         "event_metadata": {
-                            "detections": evasion_crossings, 
-                            "confidence_scores": [d.get("confidence", 0) for d in evasion_crossings],
+                            "detections": self._evasion_crossings, 
+                            "confidence_scores": [d.get("confidence", 0) for d in self._evasion_crossings],
                             "crossing_direction": "down_to_up_no_tap",
                             "detection_method": "computer_vision_tap_validation",
                             "event_id": f"cv_evasion_{int(current_time)}"
@@ -297,13 +309,13 @@ class EdgeDevice:
                     # Also send detection events
                     await self.event_processor.add_detection_event(
                         camera_id=camera_id,
-                        detections=evasion_crossings
+                        detections=self._evasion_crossings
                     )
 
             # OPTIMIZED: Throttle cleanup to every 5 seconds instead of every frame
-            if (current_time - self._last_cleanup) >= self._cleanup_interval:
+            if (monotonic_time - self._last_cleanup) >= self._cleanup_interval:
                 self.rules.cleanup_old_tracks()
-                self._last_cleanup = current_time
+                self._last_cleanup = monotonic_time
             
             await self._send_batched_detections()
             
@@ -358,7 +370,7 @@ class EdgeDevice:
     
     async def shutdown(self):
         """Graceful shutdown."""
-        logger.info("Shutting down edge device...")
+        # logger.info("Shutting down edge device...")
         self.is_running = False
         
         # Shutdown detection engine and its executors
@@ -374,7 +386,7 @@ class EdgeDevice:
         except Exception:
             pass
         
-        logger.info("Edge device shutdown complete")
+        # logger.info("Edge device shutdown complete")
 
 
 async def main():

@@ -3,8 +3,9 @@ Event processing and correlation logic.
 """
 import asyncio
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Deque
 from dataclasses import dataclass
+from collections import deque
 from loguru import logger
 from config import settings
 
@@ -16,6 +17,13 @@ class DetectionEvent:
     camera_id: int
     detections: List[Dict[str, Any]]
     frame_data: Optional[bytes] = None
+    
+    def reset(self, timestamp: float, camera_id: int, detections: List[Dict[str, Any]], frame_data: Optional[bytes] = None):
+        """Reset event for reuse in object pool."""
+        self.timestamp = timestamp
+        self.camera_id = camera_id
+        self.detections = detections
+        self.frame_data = frame_data
 
 
 @dataclass
@@ -36,17 +44,28 @@ class EventProcessor:
         self.evasion_threshold = 2.0  # seconds
         self.max_detection_age = 10.0  # seconds
         self.pending_detections = []  # batch regular detections
-        self.last_batch_sent = time.time()
+        # Use monotonic time for batch interval tracking (not affected by clock adjustments)
+        self.last_batch_sent = time.monotonic()
+        
+        # MEMORY OPTIMIZATION: Object pool for DetectionEvent reuse
+        self._event_pool: Deque[DetectionEvent] = deque(maxlen=50)  # Pool of reusable events
+        self._pool_size = 0
         
     async def add_detection_event(self, camera_id: int, detections: List[Dict[str, Any]], 
                                 frame_data: Optional[bytes] = None) -> DetectionEvent:
         """Add a new detection event."""
-        event = DetectionEvent(
-            timestamp=time.time(),
-            camera_id=camera_id,
-            detections=detections,
-            frame_data=frame_data
-        )
+        # MEMORY OPTIMIZATION: Reuse event from pool if available
+        if self._event_pool:
+            event = self._event_pool.popleft()
+            event.reset(time.time(), camera_id, detections, frame_data)
+        else:
+            event = DetectionEvent(
+                timestamp=time.time(),
+                camera_id=camera_id,
+                detections=detections,
+                frame_data=frame_data
+            )
+            self._pool_size += 1
         
         self.detection_events.append(event)
         
@@ -121,15 +140,14 @@ class EventProcessor:
         if not self.pending_detections:
             return []
         
-        # Check if it's time to send a batch
-        current_time = time.time()
-        if current_time - self.last_batch_sent < settings.detection_batch_interval:
+        # OPTIMIZED: Use monotonic time for interval checking
+        monotonic_now = time.monotonic()
+        if monotonic_now - self.last_batch_sent < settings.detection_batch_interval:
             return []
         
-        # Return pending detections and clear the list
-        batch = self.pending_detections.copy()
-        self.pending_detections.clear()
-        self.last_batch_sent = current_time
+        batch = self.pending_detections
+        self.pending_detections = []
+        self.last_batch_sent = monotonic_now
         
         logger.info(f"Prepared detection batch: {len(batch)} events")
         return batch
@@ -165,33 +183,45 @@ class EventProcessor:
     
     async def _cleanup_old_events(self):
         """Remove old events to prevent memory buildup."""
+        # OPTIMIZED: Cache current_time (single syscall)
         current_time = time.time()
+        max_detection_age = self.max_detection_age
+        max_gate_age = self.max_detection_age * 2
         
-        # Clean detection events
-        self.detection_events = [
-            event for event in self.detection_events
-            if current_time - event.timestamp < self.max_detection_age
-        ]
+        # MEMORY OPTIMIZATION: Return old events to pool instead of discarding
+        new_detection_events = []
+        for event in self.detection_events:
+            if current_time - event.timestamp < max_detection_age:
+                new_detection_events.append(event)
+            else:
+                # Return event to pool for reuse
+                if len(self._event_pool) < self._event_pool.maxlen:
+                    self._event_pool.append(event)
+        
+        self.detection_events = new_detection_events
         
         # Clean gate events (keep more history)
         self.gate_events = [
             event for event in self.gate_events
-            if current_time - event.timestamp < self.max_detection_age * 2
+            if current_time - event.timestamp < max_gate_age
         ]
     
     async def get_statistics(self) -> Dict[str, Any]:
         """Get processing statistics."""
+        # OPTIMIZED: Cache current_time and batch time calculations
         current_time = time.time()
+        time_threshold = current_time - 60  # Last minute threshold
         
-        recent_detections = len([
-            event for event in self.detection_events
-            if current_time - event.timestamp < 60  # Last minute
-        ])
+        # Count recent events using cached threshold
+        recent_detections = sum(
+            1 for event in self.detection_events
+            if event.timestamp > time_threshold
+        )
         
-        recent_gate_events = len([
-            event for event in self.gate_events
-            if current_time - event.timestamp < 60
-        ])
+        recent_gate_events = sum(
+            1 for event in self.gate_events
+            if event.timestamp > time_threshold
+        )
         
         return {
             "total_detection_events": len(self.detection_events),
@@ -199,5 +229,8 @@ class EventProcessor:
             "recent_detections_1min": recent_detections,
             "recent_gate_events_1min": recent_gate_events,
             "evasion_threshold": self.evasion_threshold,
-            "max_detection_age": self.max_detection_age
+            "max_detection_age": self.max_detection_age,
+            "object_pool_size": len(self._event_pool),
+            "object_pool_capacity": self._event_pool.maxlen,
+            "total_objects_created": self._pool_size
         }
