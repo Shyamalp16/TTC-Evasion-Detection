@@ -43,7 +43,3 @@ SnitchSystem/
 - **Server**: FastAPI, SQLAlchemy, PostgreSQL, Docker
 - **Cameras**: RTSP streams from IP cameras
 - **AI**: Ultralytics YOLO for person detection
-
-## License
-
-[Add your license here]
